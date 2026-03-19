@@ -132,7 +132,7 @@ last_closed_bar    không dùng: last_bar, prev_bar, closed
 ```python
 # Thresholds tách ra config vì chắc chắn sẽ tune
 MIN_PRICE_JPY     = 100          # giá đóng cửa TB 12 bar
-MIN_TURNOVER_JPY  = 5_000_000    # turnover = close * volume (Yahoo không có sẵn, tự tính)
+MIN_TURNOVER_JPY  = 20_000_000    # turnover = close * volume (Yahoo không có sẵn, tự tính)
 MAX_INACTIVE_BARS = 6            # inactive = volume == 0 cả N bar gần nhất
 
 # yahoo.py retry
@@ -722,5 +722,6 @@ data_provider/
 provider mới, scanner.py và plugin không cần sửa gì.
 
 **Ghi chú 
-code fvg nguyên mẫu tác giả:
+- Code fvg nguyên mẫu tác giả:
 reference/pine/imfvg_luxalgo_original.pine
+- Yahoo luôn trả về nến hiện tại đang giao dịch (chưa đóng). Phải dùng time-cutoff (tz-aware) để filter bỏ các nến của tương lai trước khi check completeness.

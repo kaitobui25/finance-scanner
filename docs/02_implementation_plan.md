@@ -46,7 +46,7 @@
 - [x] **1.3** Khai báo pre_filter constants
   ```python
   MIN_PRICE_JPY     = 100
-  MIN_TURNOVER_JPY  = 5_000_000
+  MIN_TURNOVER_JPY  = 20_000_000
   MAX_INACTIVE_BARS = 6
   ```
 - [x] **1.4** Khai báo operational constants
@@ -55,26 +55,26 @@
   MAX_BATCH_TIME_SEC = 7_200
   CACHE_MERGE_WINDOW = {"1MO": 3, "1WK": 4, "1D": 5}
   ```
-- [ ] **1.5** Implement `get_last_closed_bar(timeframe: str) -> date`
+- [x] **1.5** Implement `get_last_closed_bar(timeframe: str) -> date`
   - `"1MO"` → `first_of_this_month - 1 month` (calendar-based, không phụ thuộc Yahoo)
   - Raise `ValueError` cho timeframe không hỗ trợ
-- [ ] **1.6** Test: chạy 2026-03-15 JST → phải trả `2026-02-01` ✓
+- [x] **1.6** Test: chạy 2026-03-15 JST → phải trả `2026-02-01` ✓
 
 ---
 
 ### Phase 2 — data_provider/base.py
 
-- [ ] **2.1** Định nghĩa `DataProviderProtocol` với method `get_ohlcv(symbol: str, timeframe: str) -> pd.DataFrame`
-- [ ] **2.2** Định nghĩa custom exceptions: `DataIncompleteError`, `NoDataError`
+- [x] **2.1** Định nghĩa `DataProviderProtocol` với method `get_ohlcv(symbol: str, timeframe: str) -> pd.DataFrame`
+- [x] **2.2** Định nghĩa custom exceptions: `DataIncompleteError`, `NoDataError`
 
 ---
 
 ### Phase 3 — data_provider/cache.py
 
-- [ ] **3.1** Implement `read_cache(symbol, timeframe) -> pd.DataFrame | None`
+- [x] **3.1** Implement `read_cache(symbol, timeframe) -> pd.DataFrame | None`
   - Path pattern: `cache/{symbol}_{timeframe}.parquet`
   - Trả `None` nếu file chưa tồn tại
-- [ ] **3.2** Implement `write_cache(symbol, timeframe, df_new)`
+- [x] **3.2** Implement `write_cache(symbol, timeframe, df_new)`
   - Đọc cache hiện có → lấy `max_date`
   - Merge window = `CACHE_MERGE_WINDOW[timeframe]` bar gần nhất (re-syncable)
   - Bar cũ hơn window → **immutable**, không ghi đè
@@ -84,33 +84,33 @@
     - `1D`  → `YYYY-MM-DD`
   - `drop_duplicates(subset=["date"])` + `sort_values("date")`
   - **Atomic write**: ghi ra `.tmp` → `os.replace()` (POSIX atomic)
-- [ ] **3.3** Implement **data gap protection** sau khi merge
+- [x] **3.3** Implement **data gap protection** sau khi merge
   - Check continuity: `df["date"].diff()` — nếu có gap > 1 tháng (với `1MO`) → raise `DataIncompleteError("Data gap detected after merge")`
   - Lý do: Yahoo đôi khi silent-drop 1 tháng → merge vẫn pass → cache thiếu lịch sử mà không biết → FVG index mapping sai
   - Expected gap threshold theo timeframe:
     ```python
     MAX_DATE_GAP = {"1MO": 32, "1WK": 8, "1D": 4}  # days, dùng relativedelta để chính xác
     ```
-- [ ] **3.4** Test: write → crash simulation → verify file không corrupt
-- [ ] **3.5** Test gap protection: inject DataFrame thiếu 1 tháng giữa → phải raise `DataIncompleteError`
+- [x] **3.4** Test: write → crash simulation → verify file không corrupt
+- [x] **3.5** Test gap protection: inject DataFrame thiếu 1 tháng giữa → phải raise `DataIncompleteError`
 
 ---
 
 ### Phase 4 — data_provider/yahoo.py
 
-- [ ] **4.1** Implement `get_ohlcv(symbol, timeframe) -> pd.DataFrame`
+- [x] **4.1** Implement `get_ohlcv(symbol, timeframe) -> pd.DataFrame`
   - Dùng `yfinance`, `interval` map từ timeframe token (1MO → `"1mo"`)
   - Normalize columns về lowercase: `open, high, low, close, volume`
   - Normalize datetime index về `TZ_MARKET`
-- [ ] **4.2** Implement `is_no_data_error(e, df) -> bool`
+- [x] **4.2** Implement `is_no_data_error(e, df) -> bool`
   - Cover các case: `None`, `df.empty`, thiếu required columns, message "no data"
-- [ ] **4.3** Implement retry với exponential backoff
+- [x] **4.3** Implement retry với exponential backoff
   - `BASE * 2^n`, cap per-attempt
   - Tổng thời gian chờ ≤ `MAX_RETRY_TIME_SEC` (60s/symbol)
   - Retry 3x → raise `NoDataError` nếu `is_no_data_error`, else raise thường
-- [ ] **4.4** Implement completeness check
+- [x] **4.4** Implement completeness check
   - `last_bar_date == get_last_closed_bar(timeframe)` → nếu không: raise `DataIncompleteError`
-- [ ] **4.5** Implement freshness check
+- [x] **4.5** Implement freshness check
   - `volume[-1] > 0` → nếu không: raise `DataIncompleteError`
   - `OHLC[-1] != OHLC[-2]` (ít nhất 1 giá trị khác) → nếu không: raise `DataIncompleteError`
 - [ ] **4.6** Implement **soft delisting detection** trong `scanner.py` (gọi sau khi fetch thành công)
@@ -118,26 +118,26 @@
   - Lý do: symbol vẫn tồn tại trên Yahoo nhưng không update nữa (suspended, delisted ngầm, merger) → fetch không lỗi nhưng data cũ → tiếp tục scan vô nghĩa, lãng phí quota
   - Log: `WARN scanner {symbol} soft-delisted: last_bar={last_bar_date}, setting is_active=0`
   - Khác với hard delisting (is_no_data_error): case này Yahoo vẫn trả data, chỉ là data cũ
-- [ ] **4.7** Test với `7203.T` thực → verify DataFrame shape, dates, columns
+- [x] **4.7** Test với `7203.T` thực → verify DataFrame shape, dates, columns
 
 ---
 
 ### Phase 5 — core/pre_filter.py
 
-- [ ] **5.1** Implement `passes_filter(df: pd.DataFrame) -> bool`
+- [x] **5.1** Implement `passes_filter(df: pd.DataFrame) -> bool`
   - Step 1: `df.dropna(subset=["close", "volume"])` — NaN guard trước
   - Step 2: `len(df) < 12` → return `False` (không đủ data để tính TB)
   - Step 3: `df["close"].tail(12).mean() < MIN_PRICE_JPY` → return `False`
   - Step 4: `(df["close"] * df["volume"]).tail(12).mean() < MIN_TURNOVER_JPY` → return `False`
   - Step 5: `df["volume"].tail(MAX_INACTIVE_BARS).eq(0).all()` → return `False`
   - Else → return `True`
-- [ ] **5.2** Test với mock DataFrame: penny stock, zero-volume, thin turnover → phải bị lọc
+- [x] **5.2** Test với mock DataFrame: penny stock, zero-volume, thin turnover → phải bị lọc
 
 ---
 
 ### Phase 6 — indicators/base.py
 
-- [ ] **6.1** Định nghĩa `IndicatorResult` TypedDict
+- [x] **6.1** Định nghĩa `IndicatorResult` TypedDict
   ```python
   class IndicatorResult(TypedDict):
       indicator : str            # "IMFVG"
@@ -145,7 +145,7 @@
       signal    : Optional[str]  # "BULLISH" | "BEARISH" | None
       meta      : dict           # gap_top, gap_bottom, close_price
   ```
-- [ ] **6.2** Định nghĩa contract `analyze(df, symbol, timeframe="1MO") -> IndicatorResult`
+- [x] **6.2** Định nghĩa contract `analyze(df, symbol, timeframe="1MO") -> IndicatorResult`
   - Document rõ index mapping: `df.iloc[-1]` = bar[0] current, `df.iloc[-4]` = bar[3]
 
 ---
@@ -156,8 +156,8 @@
 > FVG được tạo ra và bị mitigate ngay tại cùng bar quan sát — đây là điều kiện đặc biệt
 > so với FVG thông thường. Bar hiện tại (`iloc[-1]`) đóng vào trong gap của 3 bar trước.
 
-- [ ] **7.1** Guard đầu hàm: `len(df) < 4` → return `IndicatorResult(signal=None, meta={})`
-- [ ] **7.2** Implement Bullish IMFVG
+- [x] **7.1** Guard đầu hàm: `len(df) < 4` → return `IndicatorResult(signal=None, meta={})`
+- [x] **7.2** Implement Bullish IMFVG
   ```
   Điều kiện (filterWidth=0, tức gap thực sự tồn tại):
     1. df.iloc[-4]["low"]   > df.iloc[-2]["high"]   # gap tồn tại
@@ -167,7 +167,7 @@
   gap_top    = df.iloc[-4]["low"]
   gap_bottom = df.iloc[-2]["high"]
   ```
-- [ ] **7.3** Implement Bearish IMFVG
+- [x] **7.3** Implement Bearish IMFVG
   ```
   Điều kiện:
     1. df.iloc[-2]["low"]   > df.iloc[-4]["high"]   # gap tồn tại
@@ -177,10 +177,10 @@
   gap_top    = df.iloc[-2]["low"]
   gap_bottom = df.iloc[-4]["high"]
   ```
-- [ ] **7.4** Ưu tiên: nếu cả bull lẫn bear đều true trong cùng 1 bar → return `BEARISH`
+- [x] **7.4** Ưu tiên: nếu cả bull lẫn bear đều true trong cùng 1 bar → return `BEARISH`
   (theo Pine Script: `bear` được check sau `bull`, ghi đè `os`)
-- [ ] **7.5** Return `IndicatorResult` đầy đủ với `meta = {gap_top, gap_bottom, close_price}`
-- [ ] **7.6** Test với mock DataFrame constructed thủ công
+- [x] **7.5** Return `IndicatorResult` đầy đủ với `meta = {gap_top, gap_bottom, close_price}`
+- [x] **7.6** Test với mock DataFrame constructed thủ công
   - Case bullish rõ ràng → phải detect ✓
   - Case bearish rõ ràng → phải detect ✓
   - Case không có gap → phải trả `None` ✓
@@ -190,46 +190,46 @@
 
 ### Phase 8 — core/plugin_manager.py
 
-- [ ] **8.1** Auto-load tất cả `*.py` trong `indicators/`, loại trừ `base.py` và `__init__.py`
-- [ ] **8.2** Sort alphabetical → deterministic load order (cross-platform)
+- [x] **8.1** Auto-load tất cả `*.py` trong `indicators/`, loại trừ `base.py` và `__init__.py`
+- [x] **8.2** Sort alphabetical → deterministic load order (cross-platform)
   ```python
   plugins = sorted(glob("indicators/*.py"))
   ```
-- [ ] **8.3** Mỗi plugin `analyze()` wrap trong `try/except`
+- [x] **8.3** Mỗi plugin `analyze()` wrap trong `try/except`
   - Exception → `log.error(f"plugin {plugin_name} / {symbol}: {err}")` rồi `continue`
   - Không để 1 plugin lỗi crash toàn bộ symbol
-- [ ] **8.4** Return `List[IndicatorResult]` (filter bỏ những result `signal=None`)
-- [ ] **8.5** Test: inject plugin lỗi → verify scanner vẫn tiếp tục, log có `ERROR plugin`
+- [x] **8.4** Return `List[IndicatorResult]` (filter bỏ những result `signal=None`)
+- [x] **8.5** Test: inject plugin lỗi → verify scanner vẫn tiếp tục, log có `ERROR plugin`
 
 ---
 
 ### Phase 9 — core/signal_writer.py + DB init
 
-- [ ] **9.1** Implement `init_db()` — tạo 3 bảng `_1MO` nếu chưa tồn tại
+- [x] **9.1** Implement `init_db()` — tạo 3 bảng `_1MO` nếu chưa tồn tại
   - `scan_state_1MO`: `symbol PK, status, last_scanned_at, fail_reason, retry_count, is_active`
   - `signals_1MO`: schema đầy đủ + `UNIQUE(symbol, indicator, signal_date)`
   - `batch_runs_1MO`: tracking metadata
-- [ ] **9.2** Tạo indexes bắt buộc
+- [x] **9.2** Tạo indexes bắt buộc
   ```sql
   CREATE INDEX IF NOT EXISTS idx_scan_state_1MO_status_retry
     ON scan_state_1MO(status, retry_count);
   CREATE INDEX IF NOT EXISTS idx_signals_1MO_active_notify
     ON signals_1MO(status, notified_at);
   ```
-- [ ] **9.3** Implement `seed_symbols(symbols_csv_path)` — populate `scan_state_1MO` từ CSV
+- [x] **9.3** Implement `seed_symbols(symbols_csv_path)` — populate `scan_state_1MO` từ CSV
   - `INSERT OR IGNORE` để idempotent (chạy lại không mất state)
-- [ ] **9.4** Implement `expire_old_signals(timeframe)` — ACTIVE → EXPIRED
+- [x] **9.4** Implement `expire_old_signals(timeframe)` — ACTIVE → EXPIRED
   ```sql
   UPDATE signals_1MO SET status='EXPIRED'
   WHERE signal_date < [last_closed_bar - 3 months]
     AND status = 'ACTIVE'
   ```
-- [ ] **9.5** Implement `write_signal(symbol, result, timeframe)`
+- [x] **9.5** Implement `write_signal(symbol, result, timeframe)`
   - `signal_date = get_last_closed_bar(timeframe)` (không dùng `date.today()`)
   - `INSERT OR IGNORE INTO signals_1MO ...`
   - Log `DEBUG "duplicate skipped"` nếu `rowcount == 0`
   - Log `INFO "inserted"` nếu `rowcount == 1`
-- [ ] **9.6** Test: insert → insert lại cùng `(symbol, indicator, signal_date)` → phải ignore, không raise
+- [x] **9.6** Test: insert → insert lại cùng `(symbol, indicator, signal_date)` → phải ignore, không raise
 
 ---
 
@@ -342,7 +342,7 @@
 
 ### Phase 14 — Tests
 
-- [ ] **14.1** `tests/test_fvg.py`
+- [x] **14.1** `tests/test_fvg.py`
   - Mock DataFrame với giá trị cụ thể → verify bullish detect
   - Mock DataFrame với giá trị cụ thể → verify bearish detect
   - Mock DataFrame `len < 4` → verify trả `None`
