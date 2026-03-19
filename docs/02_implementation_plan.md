@@ -31,25 +31,25 @@
   requests
   ```
 - [x] **0.3** Tạo `.env.example` và `.gitignore` (exclude `.env`, `cache/`, `data/`, `logs/`)
-- [ ] **0.4** Tạo `data/symbols.csv` — ~4000 mã Nhật, normalized suffix `.T`
+- [x] **0.4** Tạo `data/symbols.csv` — ~4000 mã Nhật, normalized suffix `.T`
 
 ---
 
-### Phase 1 — config.py
+### Phase 1 — core/config.py
 
-- [ ] **1.1** Load `.env` → `TELEGRAM_TOKEN`, `CHAT_ID`
-- [ ] **1.2** Khai báo timezone constants
+- [x] **1.1** Load `.env` → `TELEGRAM_TOKEN`, `CHAT_ID`
+- [x] **1.2** Khai báo timezone constants
   ```python
   TZ_MARKET = "Asia/Tokyo"
   TZ_DB     = "UTC"
   ```
-- [ ] **1.3** Khai báo pre_filter constants
+- [x] **1.3** Khai báo pre_filter constants
   ```python
   MIN_PRICE_JPY     = 100
   MIN_TURNOVER_JPY  = 5_000_000
   MAX_INACTIVE_BARS = 6
   ```
-- [ ] **1.4** Khai báo operational constants
+- [x] **1.4** Khai báo operational constants
   ```python
   MAX_RETRY_TIME_SEC = 60
   MAX_BATCH_TIME_SEC = 7_200
@@ -122,7 +122,7 @@
 
 ---
 
-### Phase 5 — pre_filter.py
+### Phase 5 — core/pre_filter.py
 
 - [ ] **5.1** Implement `passes_filter(df: pd.DataFrame) -> bool`
   - Step 1: `df.dropna(subset=["close", "volume"])` — NaN guard trước
@@ -188,7 +188,7 @@
 
 ---
 
-### Phase 8 — plugin_manager.py
+### Phase 8 — core/plugin_manager.py
 
 - [ ] **8.1** Auto-load tất cả `*.py` trong `indicators/`, loại trừ `base.py` và `__init__.py`
 - [ ] **8.2** Sort alphabetical → deterministic load order (cross-platform)
@@ -203,7 +203,7 @@
 
 ---
 
-### Phase 9 — signal_writer.py + DB init
+### Phase 9 — core/signal_writer.py + DB init
 
 - [ ] **9.1** Implement `init_db()` — tạo 3 bảng `_1MO` nếu chưa tồn tại
   - `scan_state_1MO`: `symbol PK, status, last_scanned_at, fail_reason, retry_count, is_active`
@@ -280,7 +280,7 @@
 
 ---
 
-### Phase 11 — notifier.py
+### Phase 11 — core/notifier.py
 
 - [ ] **11.1** Implement `get_unnotified_signals(timeframe) -> List[dict]`
   ```sql
@@ -312,7 +312,7 @@
 
 ---
 
-### Phase 12 — batch_log.py
+### Phase 12 — core/batch_log.py
 
 - [ ] **12.1** Implement `log_batch_run(timeframe, stats_dict)`
   - INSERT vào `batch_runs_1MO`: `total_symbols, scanned, failed, signals_found, duration_sec`
@@ -360,18 +360,18 @@
 ## 2. Dependency Graph
 
 ```
-config.py
+core/config.py
     └─> data_provider/base.py
             ├─> data_provider/cache.py
             └─> data_provider/yahoo.py
-                        └─> pre_filter.py
+                        └─> core/pre_filter.py
                                 └─> indicators/base.py
                                         └─> indicators/fvg.py
-                                                └─> plugin_manager.py
-                                                        └─> signal_writer.py (+ DB init)
+                                                └─> core/plugin_manager.py
+                                                        └─> core/signal_writer.py (+ DB init)
                                                                 └─> scanner.py
-                                                                        ├─> notifier.py
-                                                                        └─> batch_log.py
+                                                                        ├─> core/notifier.py
+                                                                        └─> core/batch_log.py
 ```
 
 ---

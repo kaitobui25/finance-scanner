@@ -23,7 +23,7 @@ Nguồn gốc: Yahoo Finance dùng chính các token này trong
 
 ### 0.2 Timezone — source of truth
 
-Định nghĩa tập trung trong `config.py`, không scatter khắp codebase:
+Định nghĩa tập trung trong `core/config.py`, không scatter khắp codebase:
 
 ```python
 TZ_MARKET = "Asia/Tokyo"   # OHLCV data, bar boundary, get_last_closed_bar()
@@ -41,7 +41,7 @@ Quy tắc bắt buộc:
 ### 0.3 get_last_closed_bar() — edge case
 
 ```python
-# config.py
+# core/config.py
 # Calendar-based — KHÔNG phụ thuộc data availability của Yahoo.
 
 def get_last_closed_bar(timeframe: str) -> date:
@@ -97,7 +97,7 @@ Lý do tách bảng thay vì dùng column `timeframe`:
 
 **Python — tên hàm:**
 ```python
-# config.py
+# core/config.py
 get_last_closed_bar(timeframe: str) -> date
   # "1MO" -> YYYY-MM-01 của tháng vừa đóng
   # "1WK" -> thứ Hai của tuần vừa đóng
@@ -128,7 +128,7 @@ close_price        không dùng: close, price, c
 last_closed_bar    không dùng: last_bar, prev_bar, closed
 ```
 
-**config.py — pre_filter constants:**
+**core/config.py — pre_filter constants:**
 ```python
 # Thresholds tách ra config vì chắc chắn sẽ tune
 MIN_PRICE_JPY     = 100          # giá đóng cửa TB 12 bar
@@ -151,8 +151,8 @@ MAX_BATCH_TIME_SEC = 7_200       # 2 giờ, sau đó graceful stop + ghi state
                                  # lần sau --resume chạy tiếp từ chỗ dừng
 ```
 
-Không hardcode trong `pre_filter.py`. Khi tune threshold chỉ sửa
-`config.py`, không đụng logic.
+Không hardcode trong `core/pre_filter.py`. Khi tune threshold chỉ sửa
+`core/config.py`, không đụng logic.
 
 **Log file:**
 ```
@@ -177,7 +177,7 @@ Pattern: `[timestamp JST] LEVEL  module    message (latency)`
 
 **Plugin load order — deterministic:**
 ```python
-# plugin_manager.py
+# core/plugin_manager.py
 plugins = sorted(glob("indicators/*.py"))   # alphabetical, loại trừ base.py và __init__.py
 ```
 
@@ -199,7 +199,7 @@ finance-scanner/
 │
 ├── .env                          # TELEGRAM_TOKEN, CHAT_ID — không commit
 ├── .env.example
-├── config.py                     # load .env, hằng số, get_last_closed_bar()
+
 ├── requirements.txt
 ├── README.md
 ├── run.sh                        # entry point cho cronjob
@@ -218,11 +218,15 @@ finance-scanner/
 │   ├── ema.py                    # placeholder v2
 │   └── rsi.py                    # placeholder v2
 │
-├── pre_filter.py                 # lọc rác trước khi phân tích kỹ thuật
-├── plugin_manager.py             # auto-load indicators/*, try/except per plugin
-├── signal_writer.py              # ghi signals_{timeframe}, expire cũ, UNIQUE
-├── notifier.py                   # Telegram, group by signal_type, chunk 50
-├── batch_log.py                  # ghi batch_runs_{timeframe}, JSON export
+├── core/                         # Các module xử lý logic chính
+│   ├── __init__.py
+│   ├── config.py                 # load .env, hằng số, get_last_closed_bar()
+│   ├── pre_filter.py             # lọc rác trước khi phân tích kỹ thuật
+│   ├── plugin_manager.py         # auto-load indicators/*, try/except per plugin
+│   ├── signal_writer.py          # ghi signals_{timeframe}, expire cũ, UNIQUE
+│   ├── notifier.py               # Telegram, group by signal_type, chunk 50
+│   └── batch_log.py              # ghi batch_runs_{timeframe}, JSON export
+│
 ├── scanner.py                    # CLI: --timeframe --resume --retry-failed --dry-run
 │
 ├── data/
@@ -303,7 +307,7 @@ finance-scanner/
   |        v                                 |
   |      df  (monthly OHLCV DataFrame)       |
   |                                          |
-  |  [pre_filter.py]                         |
+  |  [core/pre_filter.py]                    |
   |    df.dropna(subset=["close","volume"])  |  NaN guard trước — Yahoo đôi khi trả NaN
   |    len(df) < 12 sau dropna?              |  -> skip (không đủ data để filter)
   |    giá TB 12 bar < MIN_PRICE_JPY?        |  -> skip, continue
@@ -311,7 +315,7 @@ finance-scanner/
   |    volume.tail(6).eq(0).all()?           |  inactive = volume=0 cả 6 bar gần nhất
   |        |                                 |
   |        v                                 |
-  |  [plugin_manager.py]                     |
+  |  [core/plugin_manager.py]                |
   |    for plugin in indicators/:            |
   |      try:                                |
   |        result = plugin.analyze(          |
@@ -333,7 +337,7 @@ finance-scanner/
   |      }                                   |
   |    }                                     |
   |                                          |
-  |  [signal_writer.py]                      |
+  |  [core/signal_writer.py]                 |
   |    1. expire cũ:                         |
   |       UPDATE signals_1MO                 |
   |       SET status='EXPIRED'               |
@@ -358,7 +362,7 @@ finance-scanner/
      +------+-------+
      |               |
      v               v
-[notifier.py]   [batch_log.py]
+[core/notifier.py]   [core/batch_log.py]
                      |
   SELECT FROM        ghi batch_runs_1MO:
   signals_1MO          total_symbols
@@ -676,18 +680,18 @@ Update notified_at sau khi gửi thành công toàn bộ chunk.
 ## 8. Thứ tự Build
 
 ```
-1.  config.py               get_last_closed_bar(timeframe), constants
+1.  core/config.py          get_last_closed_bar(timeframe), constants
 2.  data_provider/base.py   Protocol get_ohlcv(symbol, timeframe)
 3.  data_provider/cache.py  read/write_cache, merge window, normalize
 4.  data_provider/yahoo.py  fetch, exponential backoff, circuit breaker
-5.  pre_filter.py           3 filter rules
+5.  core/pre_filter.py      3 filter rules
 6.  indicators/base.py      IndicatorResult TypedDict, contract analyze()
 7.  indicators/fvg.py       IMFVG logic — test mock DataFrame trước
-8.  plugin_manager.py       auto-load indicators/*, try/except per plugin
-9.  signal_writer.py        expire cũ -> insert mới, UNIQUE, bảng _1MO
+8.  core/plugin_manager.py  auto-load indicators/*, try/except per plugin
+9.  core/signal_writer.py   expire cũ -> insert mới, UNIQUE, bảng _1MO
 10. scanner.py              CLI --timeframe, try/except per symbol
-11. notifier.py             Telegram, chunk 50
-12. batch_log.py            batch_runs_1MO, JSON export
+11. core/notifier.py        Telegram, chunk 50
+12. core/batch_log.py       batch_runs_1MO, JSON export
 ```
 
 Test sau mỗi bước với 1 mã thực (7203.T) trước khi sang bước tiếp.
