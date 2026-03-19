@@ -282,8 +282,9 @@ finance-scanner/
   |        get_ohlcv(symbol, "1MO")          |  tz=Asia/Tokyo
   |        |-- lỗi 429/403                   |  backoff: BASE * 2^n, cap per-attempt
   |        |-- MAX_RETRY_TIME = 60s/symbol   |  tổng wait time, không để 1 symbol kẹt cả batch
-  |        |-- "No data found" error         |  mark is_active=False, skip vĩnh viễn
+  |        |-- "No data found" error         |  is_active=0 nếu fail >= 3 lần (hard delisting)
   |        |-- retry 3x -> circuit breaker   |
+  |        |-- soft delisting check:         |  last_bar < nay - 3M -> mark is_active=0
   |        |-- completeness check:           |
   |             last_bar_date ==             |
   |             get_last_closed_bar("1MO")?  |
@@ -421,13 +422,19 @@ SELECT symbol FROM scan_state_1MO
 `retry_count >= 3` → bỏ qua trong normal run.
 `is_active = 0` → bỏ qua vĩnh viễn trong mọi run.
 
-**Logic set is_active=0 — không làm ngay lần đầu:**
+**Logic set is_active=0 (Vô hiệu hóa vĩnh viễn):**
 ```
-Yahoo "No data found" lần 1-2 → có thể là outage tạm thời, symbol rename
-Yahoo "No data found" lần 3+   → retry_count >= 3 → lúc này mới set is_active=0
+Có 2 trường hợp để hạn chế lãng phí API quota:
 
-Tức là: is_active=0 chỉ khi đã fail liên tục >= 3 lần VÀ lỗi là "no data"
-Lỗi mạng thông thường (timeout, 429) → không set is_active=0, chỉ tăng retry_count
+1. Hard delisting (Lỗi "no data"):
+   - Lỗi "No data found" lần 1-2 -> có thể là outage tạm thời, symbol rename.
+   - Lỗi "No data found" lần 3+ -> retry_count >= 3 -> set is_active=0.
+   - Lỗi mạng thông thường (timeout, 429) -> không set is_active=0, chỉ tăng retry_count.
+
+2. Soft delisting (Dữ liệu bị bỏ mặc / ngưng cập nhật):
+   - Fetch thành công nhưng: last_bar_date < get_last_closed_bar(timeframe) - 3 months.
+   - Do cổ phiếu sáp nhập / đình chỉ, Yahoo vẫn chứa data cũ nhưng không update thêm.
+   - Gặp case này -> set is_active=0 ngay để tiết kiệm quota.
 ```
 
 **Normalize "no data" error — Yahoo không trả literal string nhất quán:**
