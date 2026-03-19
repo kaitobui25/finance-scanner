@@ -18,3 +18,9 @@ logs/
 
 #temp
 tmp/
+
+#vscode
+.vscode/
+
+#requirements
+requirements.txt
