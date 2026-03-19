@@ -25,7 +25,7 @@ TIMEFRAMES = {
 
 # --- Pre-filter thresholds ---
 MIN_PRICE_JPY     = 100          # giá đóng cửa TB 12 tháng >= 100 JPY
-MIN_TURNOVER_JPY  = 5_000_000    # turnover = close * volume, TB 12 tháng >= 5M JPY
+MIN_TURNOVER_JPY  = 20_000_000    # turnover = close * volume, TB 12 tháng >= 20M JPY
 MAX_INACTIVE_BARS = 6            # volume == 0 trong 6 tháng gần nhất → loại
 
 # --- Yahoo Finance retry & batch ---
