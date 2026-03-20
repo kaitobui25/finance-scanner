@@ -16,6 +16,7 @@ import sys
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
 from core.config import (
@@ -41,24 +42,46 @@ SYMBOLS_CSV = Path("data/symbols.csv")
 LOGS_DIR    = Path("logs")
 
 
+# ── JST Formatter ─────────────────────────────────────────────────────────────
+
+class JSTFormatter(logging.Formatter):
+    """
+    Custom formatter: asctime luôn in theo Asia/Tokyo (JST),
+    bất kể timezone của server (UTC hay khác).
+
+    Lý do cần custom:
+        logging.Formatter mặc định dùng time.localtime() → phụ thuộc OS timezone.
+        Nếu server chạy UTC, %(asctime)s sẽ in giờ UTC nhưng dán nhãn "JST" → sai 9h.
+        Override formatTime() → dùng datetime.fromtimestamp(..., tz=JST) → luôn đúng.
+    """
+    _tz = ZoneInfo(TZ_MARKET)
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=self._tz)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
 def setup_logging(timeframe: str) -> logging.Logger:
-    from zoneinfo import ZoneInfo
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    now_jst   = datetime.now(ZoneInfo(TZ_MARKET))
-    log_file  = LOGS_DIR / f"batch_{timeframe}_{now_jst.strftime('%Y%m')}.log"
+    now_jst  = datetime.now(ZoneInfo(TZ_MARKET))
+    log_file = LOGS_DIR / f"batch_{timeframe}_{now_jst.strftime('%Y%m')}.log"
 
-    fmt = "[%(asctime)s JST] %(levelname)-5s %(name)-14s %(message)s"
+    fmt       = "[%(asctime)s JST] %(levelname)-5s %(name)-14s %(message)s"
+    datefmt   = "%Y-%m-%d %H:%M:%S"
+    formatter = JSTFormatter(fmt, datefmt=datefmt)
 
     # File handler
     fh = logging.FileHandler(log_file, encoding="utf-8")
-    fh.setFormatter(logging.Formatter(fmt, datefmt="%Y-%m-%d %H:%M:%S"))
+    fh.setFormatter(formatter)
 
     # Stdout handler
     sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(logging.Formatter(fmt, datefmt="%Y-%m-%d %H:%M:%S"))
+    sh.setFormatter(formatter)
 
     root = logging.getLogger()
     if not root.handlers:
@@ -91,8 +114,8 @@ def _reset_batch(timeframe: str) -> None:
 def _load_symbols(timeframe: str, mode: str) -> list[str]:
     """
     Load symbols cần quét theo mode:
-      normal       : PENDING + FAILED retry_count < 3
-      --resume     : chỉ PENDING
+      normal        : PENDING + FAILED retry_count < 3
+      --resume      : chỉ PENDING
       --retry-failed: tất cả FAILED (force, không giới hạn retry_count)
     """
     tf = timeframe
@@ -194,13 +217,13 @@ def run_scan(timeframe: str, mode: str, dry_run: bool) -> dict:
         except NotImplementedError:
             log.debug(f"expire_old_signals not implemented for tf={timeframe}, skipping")
 
-    symbols        = _load_symbols(timeframe, mode)
-    total          = len(symbols)
-    scanned        = 0
-    failed         = 0
-    signals_found  = 0
-    batch_start    = time.time()
-    last_closed    = get_last_closed_bar(timeframe)
+    symbols       = _load_symbols(timeframe, mode)
+    total         = len(symbols)
+    scanned       = 0
+    failed        = 0
+    signals_found = 0
+    batch_start   = time.time()
+    last_closed   = get_last_closed_bar(timeframe)
 
     log.info(f"batch start | tf={timeframe} mode={mode} dry_run={dry_run} "
              f"symbols={total} last_closed={last_closed}")
@@ -218,12 +241,10 @@ def run_scan(timeframe: str, mode: str, dry_run: bool) -> dict:
             # ── 1. Fetch ──────────────────────────────────────────────────────
             df_fresh = get_ohlcv(symbol, timeframe)
 
-            # Guard: df_fresh không rỗng (phòng thủ thêm, yahoo.py đã handle)
             if df_fresh.empty:
                 raise NoDataError(f"{symbol}: no data fetched (empty DataFrame)")
 
             # ── 2. Soft delisting check ───────────────────────────────────────
-            # v1: 1MO only — 1WK/1D cần map về week/day boundary khi implement
             soft_cutoff = last_closed - relativedelta(months=3)
 
             if df_fresh.index[-1].date() < soft_cutoff:
