@@ -38,6 +38,9 @@ from data_provider.cache import read_cache, write_cache
 from data_provider.yahoo import get_ohlcv
 from data_provider.base import DataIncompleteError, NoDataError, DataProviderError
 
+from core.batch_log import log_batch_run, export_json
+from core.notifier import notify
+
 SYMBOLS_CSV = Path("data/symbols.csv")
 LOGS_DIR    = Path("logs")
 
@@ -333,7 +336,7 @@ def run_scan(timeframe: str, mode: str, dry_run: bool) -> dict:
     )
 
     return {
-        "total":         total,
+        "total_symbols":         total,
         "scanned":       scanned,
         "failed":        failed,
         "signals_found": signals_found,
@@ -369,7 +372,13 @@ def main() -> None:
         mode = "retry-failed"
 
     log = setup_logging(timeframe)
-    run_scan(timeframe, mode, dry_run)
+    
+    stats = run_scan(timeframe, mode, dry_run)
+
+    if not dry_run:
+        run_id = log_batch_run(timeframe, stats)
+        log.debug(export_json(timeframe, run_id))  # DEBUG thay INFO — chỉ hiện khi cần
+        notify(timeframe)
 
 
 if __name__ == "__main__":
