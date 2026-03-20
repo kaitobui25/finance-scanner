@@ -2,9 +2,10 @@ import os
 import logging
 import pandas as pd
 from indicators.base import IndicatorResult
+from indicators.fvg_core import detect_imfvg_from_bars, BULL, BEAR   # T05
 
 INDICATOR_NAME = "IMFVG"
-VERSION        = "1.1"
+VERSION        = "1.2"
 
 # Bật IMFVG_DEBUG=1 để inject bar values vào meta["debug"]
 # Dùng khi verify signal sai mà không cần mở chart
@@ -41,11 +42,14 @@ def analyze(
     FVG được tạo ra và bị mitigate ngay tại cùng bar quan sát.
     Bar hiện tại (iloc[-1]) đóng vào trong gap của 3 bar trước.
 
+    Logic detect dùng fvg_core.detect_imfvg_from_bars() — single source of truth.
+    filter_width = 0 (Pine default, không lọc thêm).
+
     Cần ít nhất 4 bar:
-        iloc[-1] = current bar
-        iloc[-2] = previous bar     (1 bar ago)
-        iloc[-3] = 2 bars ago
-        iloc[-4] = 3 bars ago
+        iloc[-1] = b0 current bar
+        iloc[-2] = b1 previous bar
+        iloc[-3] = b2 2 bars ago
+        iloc[-4] = b3 3 bars ago
 
     Bullish IMFVG:
         1. iloc[-4]["low"]   > iloc[-2]["high"]   # gap tồn tại
@@ -77,58 +81,46 @@ def analyze(
     b2 = df.iloc[-3]   # 2 bars ago
     b3 = df.iloc[-4]   # 3 bars ago
 
-    # Bullish IMFVG
-    bull = (
-        b3["low"]   > b1["high"]  and   # gap tồn tại
-        b2["close"] < b3["low"]   and   # bar giữa phá xuống dưới
-        b0["close"] > b3["low"]         # current close vào trong gap
+    # T06: dùng fvg_core thay vì duplicate logic
+    result = detect_imfvg_from_bars(
+        b3_low=float(b3["low"]),   b3_high=float(b3["high"]),  b3_close=float(b3["close"]),
+        b2_close=float(b2["close"]),
+        b1_low=float(b1["low"]),   b1_high=float(b1["high"]),
+        b0_close=float(b0["close"]),
+        filter_width=0.0,   # Pine default — position_tracker có thể dùng giá trị khác
     )
 
-    # Bearish IMFVG
-    bear = (
-        b1["low"]   > b3["high"]  and   # gap tồn tại
-        b2["close"] > b3["high"]  and   # bar giữa phá lên trên
-        b0["close"] < b3["high"]        # current close vào trong gap
-    )
+    signal_raw = result["signal"]
 
-    # Tích lũy — bear overwrite bull (đúng Pine Script intent)
-    signal = None
-    meta: dict = {}
+    if signal_raw is None:
+        return _NONE_RESULT
 
-    if bull:
-        signal = "BULLISH"
-        meta   = {
-            "gap_top":    float(b3["low"]),
-            "gap_bottom": float(b1["high"]),
-            "close_price": float(b0["close"]),
+    signal_map = {BULL: "BULLISH", BEAR: "BEARISH"}
+    signal = signal_map.get(signal_raw)
+
+    meta: dict = {
+        "gap_top":     result["gap_top"],
+        "gap_bottom":  result["gap_bottom"],
+        "close_price": float(b0["close"]),
+    }
+
+    log.debug(f"{symbol} {INDICATOR_NAME} {signal} detected "
+              f"gap={meta['gap_bottom']}-{meta['gap_top']} "
+              f"close={meta['close_price']}")
+
+    if DEBUG_MODE:
+        meta["debug"] = {
+            "b0": _bar_snapshot(b0),
+            "b1": _bar_snapshot(b1),
+            "b2": _bar_snapshot(b2),
+            "b3": _bar_snapshot(b3),
+            "bar_dates": {
+                "b0": str(df.index[-1].date()),
+                "b1": str(df.index[-2].date()),
+                "b2": str(df.index[-3].date()),
+                "b3": str(df.index[-4].date()),
+            },
         }
-
-    if bear:
-        signal = "BEARISH"
-        meta   = {
-            "gap_top":    float(b1["low"]),
-            "gap_bottom": float(b3["high"]),
-            "close_price": float(b0["close"]),
-        }
-
-    if signal is not None:
-        log.debug(f"{symbol} {INDICATOR_NAME} {signal} detected "
-                  f"gap={meta['gap_bottom']}-{meta['gap_top']} "
-                  f"close={meta['close_price']}")
-
-        if DEBUG_MODE:
-            meta["debug"] = {
-                "b0": _bar_snapshot(b0),
-                "b1": _bar_snapshot(b1),
-                "b2": _bar_snapshot(b2),
-                "b3": _bar_snapshot(b3),
-                "bar_dates": {
-                    "b0": str(df.index[-1].date()),
-                    "b1": str(df.index[-2].date()),
-                    "b2": str(df.index[-3].date()),
-                    "b3": str(df.index[-4].date()),
-                },
-            }
 
     return {
         "indicator": INDICATOR_NAME,
