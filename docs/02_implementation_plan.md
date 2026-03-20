@@ -126,8 +126,8 @@
 - [x] **5.1** Implement `passes_filter(df: pd.DataFrame) -> bool`
   - Step 1: `df.dropna(subset=["close", "volume"])` — NaN guard trước
   - Step 2: `len(df) < 12` → return `False` (không đủ data để tính TB)
-  - Step 3: `df["close"].tail(12).mean() < MIN_PRICE_JPY` → return `False`
-  - Step 4: `(df["close"] * df["volume"]).tail(12).mean() < MIN_TURNOVER_JPY` → return `False`
+  - Step 3: `df["close"].tail(12).median() < MIN_PRICE_JPY` → return `False`
+  - Step 4: `(df["close"] * df["volume"]).tail(12).median() < MIN_TURNOVER_JPY` → return `False`
   - Step 5: `df["volume"].tail(MAX_INACTIVE_BARS).eq(0).all()` → return `False`
   - Else → return `True`
 - [x] **5.2** Test với mock DataFrame: penny stock, zero-volume, thin turnover → phải bị lọc
