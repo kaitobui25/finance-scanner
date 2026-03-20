@@ -136,7 +136,7 @@ def test_run_scan_success(mock_seed, mock_glc, mock_ws, mock_ra, mock_pf, mock_r
         stats = scanner.run_scan(tf, "normal", dry_run=False)
     
     # Verify stats
-    assert stats["total"] == 1
+    assert stats["total_symbols"] == 1
     assert stats["scanned"] == 1
     assert stats["failed"] == 0
     assert stats["signals_found"] == 1
@@ -355,5 +355,5 @@ def test_run_scan_batch_timeout(mock_glc, mock_time, mock_eos, mock_db):
         
     # the time will jump after the very first check, so it might process 0 or 1 symbol depending on exact sequence
     # `total` should be 3, but `scanned` + `failed` should be 0 or 1, definitely not 3.
-    assert stats["total"] == 3
+    assert stats["total_symbols"] == 3
     assert stats["scanned"] + stats["failed"] < 3
