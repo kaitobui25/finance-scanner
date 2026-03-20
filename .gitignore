@@ -24,3 +24,6 @@ tmp/
 
 #requirements
 requirements.txt
+
+#db
+*.bak
