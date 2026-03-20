@@ -266,12 +266,18 @@ def run_scan(timeframe: str, mode: str, dry_run: bool) -> dict:
                 log.warning(f"{symbol} cache gap: {e} — using fresh data only")
                 df = df_fresh
 
+            # read_cache() trả None trong 2 trường hợp:
+            #   (a) file chưa tồn tại   — không xảy ra vì write_cache() vừa chạy xong
+            #   (b) file bị corrupt     — write_cache() đã xóa file, read_cache() xóa
+            #                             rồi trả None thay vì raise
+            # Cả 2 case: fallback về df_fresh. Data vẫn đủ để chạy indicator,
+            # chỉ là không có lịch sử dài. Cache sẽ được rebuild lần chạy tiếp.
             if df is None:
-                cache_path = cm.CACHE_DIR / f"{symbol}_{timeframe}.parquet"
-                raise RuntimeError(
-                    f"{symbol}: cache write succeeded but read returned None "
-                    f"(path={cache_path}, exists={cache_path.exists()})"
+                log.warning(
+                    f"{symbol}: read_cache returned None after write "
+                    f"— using fresh data, cache will rebuild next run"
                 )
+                df = df_fresh
 
             # ── 4. Pre-filter ─────────────────────────────────────────────────
             if not passes_filter(df, symbol):

@@ -1,3 +1,4 @@
+import logging
 import os
 import pandas as pd
 from datetime import timedelta
@@ -8,6 +9,8 @@ from data_provider.base import DataIncompleteError
 from core.config import CACHE_MERGE_WINDOW, MAX_DATE_GAP, TZ_MARKET
 
 CACHE_DIR = Path("cache")
+
+log = logging.getLogger("cache")
 
 
 def _cache_path(symbol: str, timeframe: str) -> Path:
@@ -141,12 +144,30 @@ def read_cache(symbol: str, timeframe: str) -> pd.DataFrame | None:
 
     Returns:
         DataFrame với DatetimeIndex tz-aware (TZ_MARKET), sorted ascending.
-        None nếu file chưa tồn tại.
+        None nếu file chưa tồn tại hoặc file bị corrupt.
+
+    Notes:
+        Nếu file parquet bị corrupt (ArrowInvalid, OSError) — ví dụ do process
+        bị kill giữa lúc ghi — file sẽ bị xóa và hàm trả None.
+        Scanner sẽ fallback về df_fresh từ Yahoo và rebuild cache từ đầu.
+        Không raise exception để 1 file corrupt không làm crash cả batch.
     """
     path = _cache_path(symbol, timeframe)
     if not path.exists():
         return None
-    df = pd.read_parquet(path)
+
+    try:
+        df = pd.read_parquet(path)
+    except Exception as e:
+        # Bắt tất cả exception từ parquet (ArrowInvalid, OSError, thư viện khác)
+        # vì pyarrow / fastparquet có thể raise các type khác nhau tùy phiên bản
+        log.warning(
+            f"{symbol} corrupt cache ({type(e).__name__}: {e}) "
+            f"— deleting {path.name} and rebuilding from Yahoo"
+        )
+        path.unlink(missing_ok=True)
+        return None
+
     df["date"] = pd.to_datetime(df["date"]).dt.date
     return _to_tz_aware_index(df)
 
@@ -180,8 +201,16 @@ def write_cache(symbol: str, timeframe: str, df_new: pd.DataFrame) -> None:
     # Đọc existing — internal format
     existing_raw = None
     if path.exists():
-        existing_raw = pd.read_parquet(path)
-        existing_raw["date"] = pd.to_datetime(existing_raw["date"]).dt.date
+        try:
+            existing_raw = pd.read_parquet(path)
+            existing_raw["date"] = pd.to_datetime(existing_raw["date"]).dt.date
+        except Exception as e:
+            log.warning(
+                f"{symbol} corrupt cache during write ({type(e).__name__}: {e}) "
+                f"— deleting and rebuilding cache"
+            )
+            path.unlink(missing_ok=True)
+            existing_raw = None
 
     if existing_raw is None:
         merged = df_new
@@ -207,6 +236,10 @@ def write_cache(symbol: str, timeframe: str, df_new: pd.DataFrame) -> None:
     # Gap check — calendar-aware
     _check_gaps(merged, timeframe)
 
-    # Atomic write
-    merged.to_parquet(path_tmp, index=False)
-    os.replace(path_tmp, path)
+    # Atomic write — cleanup .tmp nếu lỗi giữa chừng
+    try:
+        merged.to_parquet(path_tmp, index=False)
+        os.replace(path_tmp, path)
+    except Exception:
+        path_tmp.unlink(missing_ok=True)
+        raise
