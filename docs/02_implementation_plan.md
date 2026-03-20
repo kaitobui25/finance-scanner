@@ -25,7 +25,6 @@
   yfinance
   pandas
   pyarrow        # parquet
-  pytz
   python-dateutil
   python-dotenv
   requests
@@ -235,23 +234,23 @@
 
 ### Phase 10 — scanner.py
 
-- [ ] **10.1** CLI setup với `argparse`
+- [x] **10.1** CLI setup với `argparse`
   ```
   --timeframe    default "1MO"
   --resume       chỉ quét PENDING (tiếp tục batch dang dở)
   --retry-failed force retry tất cả FAILED (không giới hạn retry_count)
   --dry-run      chạy full pipeline nhưng không ghi DB, không gửi Telegram
   ```
-- [ ] **10.2** Implement batch reset logic (đầu mỗi normal run)
+- [x] **10.2** Implement batch reset logic (đầu mỗi normal run)
   ```sql
   UPDATE scan_state_1MO SET status='PENDING', retry_count=0
   WHERE status='SCANNED'
   ```
-- [ ] **10.3** Implement symbol load theo mode (`--resume` / `--retry-failed` / normal)
-- [ ] **10.4** Implement `batch_start_time` guard
+- [x] **10.3** Implement symbol load theo mode (`--resume` / `--retry-failed` / normal)
+- [x] **10.4** Implement `batch_start_time` guard
   - Mỗi iteration: check `now() - batch_start > MAX_BATCH_TIME_SEC`
   - Nếu vượt: `log.warn("MAX_BATCH_TIME reached")`, `break` gracefully
-- [ ] **10.5** Implement vòng lặp chính per-symbol
+- [x] **10.5** Implement vòng lặp chính per-symbol
   ```
   try:
     symbol_start = time.time()           # ← latency tracking
@@ -272,24 +271,24 @@
   ```
   - Latency per symbol giúp phát hiện Yahoo throttle đang xảy ra (latency tăng dần)
   - Nếu thấy latency đột ngột tăng từ ~0.5s lên ~55s → đang bị rate limit, cần điều chỉnh backoff
-- [ ] **10.6** Setup logging
+- [x] **10.6** Setup logging
   - Format chuẩn: `[{timestamp JST}] {LEVEL}  {module}    {message} ({latency}s)`
   - File: `logs/batch_1MO_{YYYYMM}.log`
   - Cả file lẫn stdout
-- [ ] **10.7** Test end-to-end với `7203.T` duy nhất, `--dry-run` trước
+- [x] **10.7** Test end-to-end với `7203.T` duy nhất, `--dry-run` trước
 
 ---
 
 ### Phase 11 — core/notifier.py
 
-- [ ] **11.1** Implement `get_unnotified_signals(timeframe) -> List[dict]`
+- [x] **11.1** Implement `get_unnotified_signals(timeframe) -> List[dict]`
   ```sql
   SELECT * FROM signals_1MO
   WHERE notified_at IS NULL AND status = 'ACTIVE'
   ORDER BY signal_type, symbol
   ```
-- [ ] **11.2** Implement chunking: group by `signal_type`, chunk 50 mã/message
-- [ ] **11.3** Implement `format_message(signals_chunk, signal_type, signal_date, part, total)`
+- [x] **11.2** Implement chunking: group by `signal_type`, chunk 50 mã/message
+- [x] **11.3** Implement `format_message(signals_chunk, signal_type, signal_date, part, total)`
   ```
   [1MO | BULLISH IMFVG — 2026-02-01]  (1/2)
   Tìm thấy 87 tín hiệu:
@@ -297,10 +296,10 @@
   7203.T   |  BULLISH  |  3,250 JPY
   6758.T   |  BULLISH  |  12,480 JPY
   ```
-- [ ] **11.4** Implement `send_telegram(text)` với Telegram Bot API
+- [x] **11.4** Implement `send_telegram(text)` với Telegram Bot API
   - POST `https://api.telegram.org/bot{TOKEN}/sendMessage`
   - Retry 1 lần nếu gặp lỗi network
-- [ ] **11.5** Update `notified_at = now(UTC)` **chỉ sau khi toàn bộ chunk gửi thành công**
+- [x] **11.5** Update `notified_at = now(UTC)` **chỉ sau khi toàn bộ chunk gửi thành công**
   - Nếu chunk giữa chừng fail → không update → lần sau retry tự động
   - **Edge case crash:** process crash sau khi gửi Telegram nhưng trước khi update DB → lần sau query `notified_at IS NULL` → gửi lại → **duplicate message**
   - **Quyết định v1: accept duplicate** (Option A)
@@ -308,7 +307,7 @@
     - Duplicate không gây hại nghiêm trọng (chỉ nhận 2 lần)
     - Option B (log `message_id` vào DB) tăng complexity không cần thiết ở v1
     - Ghi chú cho v2: nếu muốn fix, thêm column `telegram_message_id` vào `signals_1MO`
-- [ ] **11.6** Test với mock data, verify chunk đúng 50/message, format đúng
+- [x] **11.6** Test với mock data, verify chunk đúng 50/message, format đúng
 
 ---
 

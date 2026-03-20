@@ -45,7 +45,7 @@ Quy tắc bắt buộc:
 # Calendar-based — KHÔNG phụ thuộc data availability của Yahoo.
 
 def get_last_closed_bar(timeframe: str) -> date:
-    now_jst = datetime.now(pytz.timezone(TZ_MARKET))
+    now_jst = datetime.now(ZoneInfo(TZ_MARKET))
 
     if timeframe == "1MO":
         first_of_this_month = now_jst.date().replace(day=1)
