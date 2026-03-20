@@ -313,11 +313,11 @@
 
 ### Phase 12 — core/batch_log.py
 
-- [ ] **12.1** Implement `log_batch_run(timeframe, stats_dict)`
+- [x] **12.1** Implement `log_batch_run(timeframe, stats_dict)`
   - INSERT vào `batch_runs_1MO`: `total_symbols, scanned, failed, signals_found, duration_sec`
-- [ ] **12.2** Implement `export_json(timeframe, run_id) -> str`
+- [x] **12.2** Implement `export_json(timeframe, run_id) -> str`
   - Export kết quả batch ra JSON cho AI agent đọc
-- [ ] **12.3** Tích hợp vào `scanner.py`: gọi `log_batch_run()` cuối mỗi batch
+- [x] **12.3** Tích hợp vào `scanner.py`: gọi `log_batch_run()` cuối mỗi batch
 
 ---
 
@@ -334,8 +334,8 @@
   ```
   5 0 4 * * /path/to/japan-scanner/run.sh
   ```
-- [ ] **13.3** Test manual run toàn bộ pipeline với 5 mã thực
-- [ ] **13.4** Test `--resume`: kill giữa chừng → chạy lại với `--resume` → tiếp tục đúng chỗ
+- [x] **13.3** Test manual run toàn bộ pipeline với 5 mã thực
+- [x] **13.4** Test `--resume`: kill giữa chừng → chạy lại với `--resume` → tiếp tục đúng chỗ
 
 ---
 
@@ -347,7 +347,7 @@
   - Mock DataFrame `len < 4` → verify trả `None`
   - Mock DataFrame không có gap → verify trả `None`
   - Verify `gap_top` và `gap_bottom` đúng giá trị
-- [ ] **14.2** `tests/test_pre_filter.py`
+- [x] **14.2** `tests/test_pre_filter.py`
   - Penny stock (`close < 100 JPY`) → verify bị filter
   - Thin liquidity (turnover thấp) → verify bị filter
   - Inactive (6 bar volume=0) → verify bị filter
