@@ -12,6 +12,7 @@ scan_full_history() là pure function — safe to parallelize.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from dataclasses import dataclass
 from typing import Callable, Literal, TypedDict
 
@@ -1005,3 +1006,1070 @@ def _no_update_state(position_row: dict, reason: str) -> PositionState:
         last_signal_date      = position_row.get("last_signal_date"),
         last_checked_bar_date = position_row.get("last_checked_at"),
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4 — scan_full_history
+# ══════════════════════════════════════════════════════════════════════════════
+
+def scan_full_history(
+    df:               pd.DataFrame,
+    cfg:              PositionConfig,
+    return_trades:    bool = False,
+    summarize_trades: bool = False,
+    atr_series:       pd.Series | None = None,
+    signal_fn:        SignalFn | None = None,
+    strategy_name:    str | None = None,
+) -> (PositionState | None
+      | tuple[PositionState | None, list[Trade]]
+      | tuple[PositionState | None, TradesSummary]):
+    """
+    Quét toàn bộ lịch sử bar-by-bar. Pure function — không ghi DB, không IO.
+
+    Args:
+        df:               DataFrame tz-aware JST, sorted ascending.
+        cfg:              Toàn bộ params. Không có hardcode trong engine.
+        return_trades:    True → return (state, List[Trade]).
+        summarize_trades: True → return (state, TradesSummary). Memory-efficient.
+        atr_series:       Precomputed ATR. None → tính từ cfg.atr_period.
+                          Dùng khi chạy nhiều configs cùng atr_period để tránh recompute.
+        signal_fn:        SignalFn | None. None → make_imfvg_detector(cfg).
+        strategy_name:    Override tên strategy cho log/DB. None → từ signal_fn.__name__.
+
+    Returns:
+        return_trades=False, summarize_trades=False → PositionState | None
+        return_trades=True                          → (PositionState | None, List[Trade])
+        summarize_trades=True                       → (PositionState | None, TradesSummary)
+        None = df quá ngắn.
+
+    Raises:
+        ValueError: nếu cả return_trades và summarize_trades đều True.
+
+    Behavioral guarantees (verifiable bằng test):
+        - tp_mult tăng → avg bars_held tăng (TP khó hit hơn)
+        - filter_width tăng → ít trades hơn
+        - Thứ tự trong loop: TP/SL/TS check → signal detect (không đảo)
+        - entry bar bars_held = 0
+
+    Warning — Portfolio MDD:
+        scan_full_history trả per-symbol MDD (trades sequential, đúng).
+        KHÔNG dùng kết quả này để tính portfolio MDD cross-symbol
+        (trades overlap in time → sequential sum sai).
+    """
+    if return_trades and summarize_trades:
+        raise ValueError(
+            "return_trades và summarize_trades không dùng cùng nhau. "
+            "Chọn 1: return_trades=True (List[Trade]) "
+            "hoặc summarize_trades=True (TradesSummary, memory-efficient)."
+        )
+
+    min_bars = cfg.atr_period + 4
+    if len(df) < min_bars:
+        log.debug(
+            "scan_full_history: df quá ngắn (%d < %d), skip",
+            len(df), min_bars
+        )
+        if return_trades:    return None, []
+        if summarize_trades: return None, TradesSummary.from_accumulator(_make_accumulator())
+        return None
+
+    # ATR
+    if atr_series is None:
+        atr_series = compute_atr(
+            df["high"], df["low"], df["close"],
+            period=cfg.atr_period,   # LUÔN từ cfg
+        )
+    elif len(atr_series) != len(df):
+        raise ValueError(
+            f"atr_series length mismatch: "
+            f"atr_series={len(atr_series)}, df={len(df)}. "
+            f"Precomputed ATR phải được tính từ cùng DataFrame."
+        )
+
+    # Resolve signal_fn + name
+    if signal_fn is None:
+        signal_fn = make_imfvg_detector(cfg)
+    name = _resolve_strategy_name(signal_fn, strategy_name)
+    log.debug("scan_full_history: strategy=%s bars=%d", name, len(df))
+
+    # ── State variables ────────────────────────────────────────────────────────
+    direction:    str   | None = None
+    ts:           float | None = None
+    tp_level:     float | None = None
+    sl_level:     float | None = None
+    entry_date:   str   | None = None
+    gap_top:      float | None = None
+    gap_bottom:   float | None = None
+    entry_close:  float | None = None
+    atr_at_entry: float | None = None
+    bars_held:    int          = 0
+
+    close_reason:        str   | None = None
+    close_price_at_exit: float | None = None
+    last_signal_type:    str   | None = None
+    last_signal_date:    str   | None = None
+    last_bar_date:       str   | None = None
+    signal_action:       str   | None = None
+
+    # ── Collections ────────────────────────────────────────────────────────────
+    trades: list[Trade] = []
+    acc = _make_accumulator() if summarize_trades else None
+
+    # ── Helpers (inner functions, closure over state vars) ─────────────────────
+
+    def _bar_date_str(i: int) -> str:
+        return df.index[i].tz_convert("Asia/Tokyo").date().isoformat()
+
+    def _clean_exit() -> None:
+        """Reset tất cả position state về None sau exit.
+        bars_held KHÔNG reset — giữ để ghi vào trade record TRƯỚC khi gọi hàm này.
+        """
+        nonlocal direction, ts, tp_level, sl_level
+        nonlocal entry_date, gap_top, gap_bottom, entry_close, atr_at_entry
+        direction    = None
+        ts           = None
+        tp_level     = None
+        sl_level     = None
+        entry_date   = None
+        gap_top      = None
+        gap_bottom   = None
+        entry_close  = None
+        atr_at_entry = None
+
+    def _record(exit_price: float, reason: str, bh: int, bd: str) -> None:
+        """Ghi trade vào trades list hoặc accumulator."""
+        nonlocal close_reason, close_price_at_exit
+        close_reason        = reason
+        close_price_at_exit = exit_price
+
+        if return_trades:
+            dir_ = direction   # snapshot trước khi _clean_exit() có thể được gọi
+            actual = _apply_slippage(exit_price, dir_, reason, cfg)
+            trades.append(Trade(
+                entry_date        = entry_date,
+                exit_date         = bd,
+                direction         = dir_,   # snapshot
+                entry_price       = entry_close,
+                exit_price        = exit_price,
+                actual_exit_price = actual,
+                fee_per_trade     = cfg.fee_per_trade,
+                close_reason      = reason,
+                bars_held         = bh,
+                gap_top           = gap_top,
+                gap_bottom        = gap_bottom,
+                atr_at_entry      = atr_at_entry,
+                tp_level          = tp_level,
+                sl_level          = sl_level,
+            ))
+        elif summarize_trades:
+            dir_ = direction   # snapshot
+            _accumulate(
+                acc, exit_price, reason, bh,
+                dir_, entry_close, atr_at_entry, cfg,
+            )
+
+    def _open(sig: str, meta: dict, atr_i: float, bd: str) -> None:
+        """Mở position mới, update tất cả state vars."""
+        nonlocal direction, ts, tp_level, sl_level
+        nonlocal entry_date, gap_top, gap_bottom, entry_close, atr_at_entry
+        nonlocal bars_held, close_reason, close_price_at_exit
+
+        pos = _open_position(sig, meta, atr_i, bd, cfg)
+        direction    = pos["direction"]
+        entry_date   = pos["entry_date"]
+        entry_close  = pos["entry_price"]
+        gap_top      = pos["gap_top"]
+        gap_bottom   = pos["gap_bottom"]
+        atr_at_entry = pos["atr_at_entry"]
+        tp_level     = pos["tp_level"]
+        sl_level     = pos["sl_level"]
+        ts           = pos["trailing_stop"]
+        bars_held    = 0      # entry bar = 0
+        # KHÔNG reset close_reason/close_price_at_exit:
+        # chúng lưu reason của trade VỪA ĐÓNG, giúp caller biết lý do exit
+        # ngay cả khi position mới đã mở (TP_HIT + new signal cùng bar)
+
+    # Precompute bar dates (1 lần, không convert trong loop)
+    bar_dates = [d.isoformat() for d in df.index.tz_convert("Asia/Tokyo").date]
+
+    # ── Main loop ──────────────────────────────────────────────────────────────
+    start = max(cfg.atr_period, 3)
+
+    for i in range(start, len(df)):
+        atr_i    = atr_series.iloc[i]
+        bd       = bar_dates[i]   # precomputed — không tz_convert trong loop
+        last_bar_date = bd
+
+        # Context engine cung cấp cho signal_fn
+        context: SignalContext = {
+            "atr": float(atr_i) if not pd.isna(atr_i) else None
+        }
+
+        # Skip bar nếu ATR chưa ready (không thể tính TS/TP/SL)
+        if pd.isna(atr_i) or atr_i <= 0:
+            continue
+
+        bar = df.iloc[i]
+
+        # ══ STEP 1: TP/SL/TS check TRƯỚC khi detect signal ══
+        if direction is not None:
+            bars_held += 1   # entry bar = 0, tăng từ bar sau
+            # bars_held includes current bar (exit happens within this bar)
+            # Consistent với Pine Script: exit bar được tính vào holding period
+
+            ts = _ratchet_ts(bar, direction, ts, float(atr_i), cfg)
+
+            exit_reason, exit_price = _check_exit(
+                bar, direction, tp_level, sl_level, ts, cfg
+            )
+
+            if exit_reason is not None:
+                _record(exit_price, exit_reason, bars_held, bd)
+                _clean_exit()
+
+        # ══ STEP 2: Detect signal ══
+        sig, meta = signal_fn(df, i, context)
+        if sig is not None:
+            last_signal_type = sig        # giữ signal gần nhất, không overwrite với None
+            last_signal_date = bd
+
+        if sig is not None:
+            # signal_action chỉ set khi có signal — không reset nếu không có
+            if direction is not None:
+                # Đang HOLDING (chưa exit ở step 1)
+                if sig == direction:
+                    signal_action = "IGNORE"  # v2: no TS reset
+                else:
+                    # Đảo chiều → REVERSED
+                    signal_action = "REVERSE"
+                    _record(float(bar["close"]), "REVERSED", bars_held, bd)
+                    _clean_exit()
+                    _open(sig, meta, float(atr_i), bd)
+            else:
+                # Không holding (vừa exit step 1 hoặc chưa có position)
+                # NOTE: allows exit + new entry in same bar (Pine-style execution)
+                # Exit và entry cùng close bar — không realistic với gap/low liquidity
+                # nhưng nhất quán với Pine Script behavior
+                signal_action = "OPEN"
+                _open(sig, meta, float(atr_i), bd)
+
+    # ── Build final PositionState ──────────────────────────────────────────────
+    state = PositionState(
+        new_signal_detected   = last_signal_type is not None,
+        signal_action         = signal_action,
+        is_holding            = direction is not None,
+        direction             = direction,
+        entry_date            = entry_date,
+        gap_top               = gap_top,
+        gap_bottom            = gap_bottom,
+        entry_close           = entry_close,
+        tp_level              = tp_level,
+        sl_level              = sl_level,
+        trailing_stop         = ts,
+        atr_at_entry          = atr_at_entry,
+        bars_held             = bars_held,
+        close_reason          = close_reason,
+        close_price_at_exit   = close_price_at_exit,
+        last_signal_type      = last_signal_type,
+        last_signal_date      = last_signal_date,
+        last_checked_bar_date = last_bar_date,
+    )
+
+    if return_trades:    return state, trades
+    if summarize_trades: return state, TradesSummary.from_accumulator(acc)
+    return state
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 5 — check_latest_bar
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_latest_bar(
+    df:            pd.DataFrame | None,
+    position_row:  dict,
+    cfg:           PositionConfig,
+    signal_fn:     SignalFn | None = None,
+    strategy_name: str | None = None,
+) -> PositionState:
+    """
+    Check bar mới nhất cho 1 HOLDING position. Không ghi DB — caller làm.
+
+    Dùng bởi position_monitor.run_normal() mỗi lần chạy hàng tháng.
+    Khác với scan_full_history (full history replay):
+        - Chỉ process 1 bar (bar cuối)
+        - Restore state từ DB row (không replay từ đầu)
+        - Trả PositionState để caller quyết định DB action
+
+    Guards (trả _no_update_state thay vì raise):
+        "cache_unavailable": df là None hoặc rỗng
+        "no_new_bar":        bar cuối không mới hơn last_checked_at
+        "atr_not_ready":     ATR chưa tính được tại bar cuối
+
+    bars_held convention:
+        position_row["bars_held"] là số bar đã hold TRƯỚC bar này.
+        Hàm này check bar MỚI → bars_held += 1.
+
+    Args:
+        df:            Full DataFrame từ cache (cần đủ bars để tính ATR).
+                       None = cache chưa có → guard "cache_unavailable".
+        position_row:  Dict từ DB row. Required keys:
+                           direction, trailing_stop, tp_level, sl_level,
+                           entry_close, atr_at_entry, bars_held,
+                           last_checked_at (YYYY-MM-DD JST string hoặc None)
+        cfg:           PositionConfig.
+        signal_fn:     None → make_imfvg_detector(cfg).
+        strategy_name: Override cho log.
+    """
+    # Guard 1: cache unavailable
+    if df is None or df.empty:
+        log.debug("check_latest_bar: df unavailable → cache_unavailable")
+        return _no_update_state(position_row, "cache_unavailable")
+
+    # Guard 2: no new bar
+    last_checked = position_row.get("last_checked_at")
+
+    # TZ-safe conversion: yfinance đôi khi trả tz-naive index
+    _last_idx = df.index[-1]
+    if _last_idx.tz is None:
+        _last_idx = _last_idx.tz_localize("UTC").tz_convert("Asia/Tokyo")
+    else:
+        _last_idx = _last_idx.tz_convert("Asia/Tokyo")
+    bar_date = _last_idx.date().isoformat()
+
+    # Dùng date object thay vì string comparison để tránh format mismatch
+    _bar_d  = date.fromisoformat(bar_date)
+    _last_d = date.fromisoformat(last_checked) if last_checked else None
+    if _last_d is not None and _bar_d <= _last_d:
+        log.debug(
+            "check_latest_bar: bar_date=%s <= last_checked=%s → no_new_bar",
+            bar_date, last_checked,
+        )
+        return _no_update_state(position_row, "no_new_bar")
+
+    # Compute ATR
+    if len(df) < cfg.atr_period + 1:
+        return _no_update_state(position_row, "atr_not_ready")
+
+    atr_series = compute_atr(
+        df["high"], df["low"], df["close"], period=cfg.atr_period
+    )
+    i = len(df) - 1
+    atr_i = atr_series.iloc[i]
+
+    # Guard 3: ATR not ready
+    if pd.isna(atr_i) or atr_i <= 0:
+        log.debug("check_latest_bar: atr_i=%s → atr_not_ready", atr_i)
+        return _no_update_state(position_row, "atr_not_ready")
+
+    # Resolve signal_fn
+    if signal_fn is None:
+        signal_fn = make_imfvg_detector(cfg)
+    name = _resolve_strategy_name(signal_fn, strategy_name)
+    log.debug("check_latest_bar: strategy=%s bar=%s", name, bar_date)
+
+    # Restore position state từ DB row
+    direction    = position_row["direction"]
+    ts           = float(position_row["trailing_stop"])
+    tp_level     = float(position_row["tp_level"])
+    sl_level     = float(position_row["sl_level"])
+    entry_close  = float(position_row["entry_close"])
+    atr_at_entry = float(position_row["atr_at_entry"])
+    bars_held    = int(position_row.get("bars_held", 0)) + 1   # bar mới
+
+    bar = df.iloc[i]
+
+    # Context
+    context: SignalContext = {
+        "atr": float(atr_i),
+    }
+
+    # Ratchet TS
+    ts = _ratchet_ts(bar, direction, ts, float(atr_i), cfg)
+
+    # ══ STEP 1: TP/SL/TS check ══
+    close_reason        = None
+    close_price_at_exit = None
+    signal_action       = None
+
+    exit_reason, exit_price = _check_exit(
+        bar, direction, tp_level, sl_level, ts, cfg
+    )
+
+    if exit_reason is not None:
+        close_reason        = exit_reason
+        close_price_at_exit = exit_price
+        # After exit: direction = None (no longer holding)
+        direction_after = None
+        tp_after = sl_after = ts_after = None
+        entry_after = gap_top_after = gap_bottom_after = atr_after = None
+        entry_date_after = None
+        bars_held_after  = bars_held
+    else:
+        direction_after  = direction
+        tp_after         = tp_level
+        sl_after         = sl_level
+        ts_after         = ts
+        entry_after      = entry_close
+        gap_top_after    = position_row.get("gap_top")
+        gap_bottom_after = position_row.get("gap_bottom")
+        atr_after        = atr_at_entry
+        entry_date_after = position_row.get("entry_date")
+        bars_held_after  = bars_held
+
+    # ══ STEP 2: Signal detection ══
+    sig, meta = signal_fn(df, i, context)
+
+    last_signal_type = position_row.get("last_signal_type")
+    last_signal_date = position_row.get("last_signal_date")
+
+    if sig is not None:
+        last_signal_type = sig
+        last_signal_date = bar_date
+
+        if direction_after is not None:
+            # Còn holding sau step 1
+            if sig == direction_after:
+                signal_action = "IGNORE"
+            else:
+                # Reverse
+                signal_action   = "REVERSE"
+                close_reason    = "REVERSED"
+                close_price_at_exit = float(bar["close"])
+                # Open new position
+                # KeyError nếu meta thiếu "entry_price" = programming error trong signal_fn
+                try:
+                    pos = _open_position(sig, meta, float(atr_i), bar_date, cfg)
+                except KeyError as e:
+                    raise KeyError(
+                        f"signal_fn {getattr(signal_fn, '__name__', '?')} "
+                        f"trả meta thiếu key {e} khi signal={sig}. "
+                        f"meta phải có 'entry_price' khi signal != None."
+                    ) from e
+                direction_after  = pos["direction"]
+                entry_after      = pos["entry_price"]
+                gap_top_after    = pos["gap_top"]
+                gap_bottom_after = pos["gap_bottom"]
+                atr_after        = pos["atr_at_entry"]
+                tp_after         = pos["tp_level"]
+                sl_after         = pos["sl_level"]
+                ts_after         = pos["trailing_stop"]
+                entry_date_after = pos["entry_date"]
+                bars_held_after  = 0
+        else:
+            # Không holding (vừa exit step 1)
+            # NOTE: Pine-style — exit + entry cùng bar
+            signal_action = "OPEN"
+            try:
+                pos = _open_position(sig, meta, float(atr_i), bar_date, cfg)
+            except KeyError as e:
+                raise KeyError(
+                    f"signal_fn {getattr(signal_fn, '__name__', '?')} "
+                    f"trả meta thiếu key {e} khi signal={sig}. "
+                    f"meta phải có 'entry_price' khi signal != None."
+                ) from e
+            direction_after  = pos["direction"]
+            entry_after      = pos["entry_price"]
+            gap_top_after    = pos["gap_top"]
+            gap_bottom_after = pos["gap_bottom"]
+            atr_after        = pos["atr_at_entry"]
+            tp_after         = pos["tp_level"]
+            sl_after         = pos["sl_level"]
+            ts_after         = pos["trailing_stop"]
+            entry_date_after = pos["entry_date"]
+            bars_held_after  = 0
+
+    return PositionState(
+        new_signal_detected   = sig is not None,
+        signal_action         = signal_action,
+        is_holding            = direction_after is not None,
+        direction             = direction_after,
+        entry_date            = entry_date_after,
+        gap_top               = gap_top_after,
+        gap_bottom            = gap_bottom_after,
+        entry_close           = entry_after,
+        tp_level              = tp_after,
+        sl_level              = sl_after,
+        trailing_stop         = ts_after,
+        atr_at_entry          = atr_after,
+        bars_held             = bars_held_after,
+        close_reason          = close_reason,
+        close_price_at_exit   = close_price_at_exit,
+        last_signal_type      = last_signal_type,
+        last_signal_date      = last_signal_date,
+        last_checked_bar_date = bar_date,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 6 — backtest_symbol + backtest_portfolio
+# ══════════════════════════════════════════════════════════════════════════════
+
+def backtest_symbol(
+    symbol:        str,
+    cfg:           PositionConfig,
+    timeframe:     str = "1MO",
+    atr_cache:     pd.Series | None = None,
+    signal_fn:     SignalFn | None = None,
+    strategy_name: str | None = None,
+) -> dict | None:
+    """
+    Backtest 1 symbol từ cache parquet. Không fetch Yahoo.
+
+    Args:
+        symbol:    Mã chứng khoán, VD "7203.T".
+        cfg:       PositionConfig.
+        timeframe: "1MO" | "1WK" | "1D".
+        atr_cache: Precomputed ATR Series. None → compute từ cfg.atr_period.
+                   Dùng khi batch nhiều configs cùng atr_period để tránh recompute.
+        signal_fn: None → make_imfvg_detector(cfg).
+        strategy_name: Override tên strategy cho log/DB.
+
+    Returns:
+        dict với metrics hoặc None nếu:
+            - Cache không tồn tại
+            - Không đủ bars
+            - 0 trades trong lịch sử
+
+    Keys trả về:
+        symbol, strategy, n_trades, win_rate, avg_rr, expectancy_rr,
+        avg_net_pnl, max_drawdown, sharpe, calmar, avg_bars,
+        pct_tp, pct_sl, pct_ts, pct_reversed
+    """
+    # Import lazily để không circular import khi test
+    try:
+        from data_provider.cache import read_cache
+        df = read_cache(symbol, timeframe)
+    except Exception as e:
+        log.debug("backtest_symbol: cannot read cache %s/%s: %s", symbol, timeframe, e)
+        df = None
+
+    if df is None or df.empty:
+        log.debug("backtest_symbol: no cache data for %s/%s — skip", symbol, timeframe)
+        return None
+
+    # Resolve name trước khi scan
+    if signal_fn is None:
+        signal_fn = make_imfvg_detector(cfg)
+    name = _resolve_strategy_name(signal_fn, strategy_name)
+
+    result = scan_full_history(
+        df, cfg,
+        summarize_trades = True,
+        atr_series       = atr_cache,
+        signal_fn        = signal_fn,
+        strategy_name    = name,
+    )
+
+    if result is None:
+        return None
+
+    _, summary = result
+
+    if summary.n_trades == 0:
+        log.debug(
+            "backtest_symbol: 0 trades for %s/%s strategy=%s "
+            "(symbol has data but no signals matched cfg)",
+            symbol, timeframe, name,
+        )
+        return None
+
+    n = summary.n_trades
+    pct_tp       = summary.n_tp       / n
+    pct_sl       = summary.n_sl       / n
+    pct_ts       = summary.n_ts       / n
+    pct_reversed = summary.n_reversed / n
+
+    return {
+        "symbol":        symbol,
+        "strategy":      name,
+        "n_trades":      n,
+        "win_rate":      summary.win_rate,
+        "avg_rr":        summary.avg_rr,
+        "expectancy_rr": summary.expectancy,
+        "avg_net_pnl":   summary.avg_net_pnl,
+        "max_drawdown":  summary.max_drawdown,
+        "sharpe":        summary.sharpe,
+        "calmar":        summary.calmar,
+        "avg_bars":      summary.avg_bars,
+        "pct_tp":        pct_tp,
+        "pct_sl":        pct_sl,
+        "pct_ts":        pct_ts,
+        "pct_reversed":  pct_reversed,
+    }
+
+
+def backtest_portfolio(
+    symbols:       list[str],
+    cfg:           PositionConfig,
+    timeframe:     str = "1MO",
+    weight_by:     str = "trades",
+    signal_fn:     SignalFn | None = None,
+    strategy_name: str | None = None,
+) -> dict:
+    """
+    Aggregate backtest metrics across nhiều symbols.
+
+    Args:
+        symbols:       List mã chứng khoán.
+        cfg:           PositionConfig.
+        timeframe:     "1MO" | "1WK" | "1D".
+        weight_by:     "trades" (default) → weighted avg theo n_trades.
+                       "symbol" → equal weight per symbol.
+                       Raises ValueError nếu giá trị khác.
+        signal_fn:     None → make_imfvg_detector(cfg).
+        strategy_name: Override tên.
+
+    Returns:
+        dict với portfolio-level metrics. Always returns dict (never None).
+        Nếu 0 symbols có data → metrics đều 0.
+
+    Portfolio keys:
+        portfolio_win_rate, portfolio_avg_rr, portfolio_expectancy_rr,
+        portfolio_avg_net_pnl, portfolio_total_net_pnl, portfolio_avg_bars,
+        pct_tp, pct_sl, pct_ts, pct_reversed,
+        total_trades, n_symbols_with_data, n_symbols_no_data,
+        weight_by, strategy
+
+    WARNING — Portfolio MDD:
+        Hàm này KHÔNG tính portfolio max_drawdown.
+        Per-symbol MDD từ backtest_symbol là MDD của trades sequential (đúng).
+        Portfolio MDD cross-symbol cần time-sorted equity curve (v3):
+            trades từ tất cả symbols → sort by exit_date → cumulative P&L → MDD.
+        DO NOT approximate bằng cách cộng per-symbol MDD —
+        trades overlap in time → con số sẽ sai.
+    """
+    if weight_by not in ("trades", "symbol"):
+        raise ValueError(
+            f"weight_by phải là 'trades' hoặc 'symbol', nhận: {weight_by!r}"
+        )
+
+    # Resolve signal_fn + name 1 lần cho toàn portfolio
+    if signal_fn is None:
+        signal_fn = make_imfvg_detector(cfg)
+    name = _resolve_strategy_name(signal_fn, strategy_name)
+
+    results = []
+    n_no_data = 0
+
+    for sym in symbols:
+        r = backtest_symbol(
+            sym, cfg, timeframe,
+            signal_fn     = signal_fn,
+            strategy_name = name,
+        )
+        if r is None:
+            n_no_data += 1
+            log.debug("backtest_portfolio: %s skipped (no cache or 0 trades)", sym)
+        else:
+            results.append(r)
+
+    n_with_data = len(results)
+    total_trades = sum(r["n_trades"] for r in results)
+
+    _empty = {
+        "portfolio_win_rate":       0.0,
+        "portfolio_avg_rr":         0.0,
+        "portfolio_expectancy_rr":  0.0,
+        "portfolio_avg_net_pnl":    0.0,
+        "portfolio_total_net_pnl":     0.0,   # sum(avg_net_pnl * n_trades) — not normalized by capital
+        "portfolio_avg_bars":       0.0,
+        "pct_tp":                   0.0,
+        "pct_sl":                   0.0,
+        "pct_ts":                   0.0,
+        "pct_reversed":             0.0,
+        "total_trades":             0,
+        "n_symbols_with_data":      n_with_data,
+        "n_symbols_no_data":        n_no_data,
+        "weight_by":                weight_by,
+        "strategy":                 name,
+    }
+
+    if not results or total_trades == 0:
+        return _empty
+
+    def _wavg(key: str) -> float:
+        """
+        Weighted average của metric theo weight_by.
+
+        NOTE: Sharpe và Calmar được averaged per-symbol — KHÔNG phải true
+        portfolio Sharpe/Calmar. True portfolio Sharpe cần raw trade returns
+        từ tất cả symbols rồi recompute (v3). Dùng giá trị này chỉ để
+        compare configs relative với nhau, không dùng để report absolute.
+        """
+        if weight_by == "trades":
+            # Weighted by n_trades — đúng cho tính win_rate, avg_rr tổng
+            total_w = total_trades
+            if total_w == 0:
+                return 0.0
+            return sum(r[key] * r["n_trades"] for r in results) / total_w
+        else:
+            # Equal weight per symbol
+            if n_with_data == 0:
+                return 0.0
+            return sum(r[key] for r in results) / n_with_data
+
+    return {
+        "portfolio_win_rate":          _wavg("win_rate"),
+        "portfolio_avg_rr":            _wavg("avg_rr"),
+        "portfolio_expectancy_rr":     _wavg("expectancy_rr"),
+        "portfolio_avg_net_pnl":       _wavg("avg_net_pnl"),
+        "portfolio_total_net_pnl":     sum(r["avg_net_pnl"] * r["n_trades"] for r in results),
+        "portfolio_avg_bars":          _wavg("avg_bars"),
+        "pct_tp":                      _wavg("pct_tp"),
+        "pct_sl":                      _wavg("pct_sl"),
+        "pct_ts":                      _wavg("pct_ts"),
+        "pct_reversed":                _wavg("pct_reversed"),
+        "total_trades":                total_trades,
+        "n_symbols_with_data":         n_with_data,
+        "n_symbols_no_data":           n_no_data,
+        "weight_by":                   weight_by,
+        "strategy":                    name,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 7 — Database Layer
+# ══════════════════════════════════════════════════════════════════════════════
+
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+POSITIONS_DB_PATH = Path("data/state.db")
+
+
+def _get_db_conn(db_path: Path = POSITIONS_DB_PATH) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    # WAL mode: concurrent read/write, ít lock hơn default journal mode
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    return conn
+
+
+def init_positions_db(timeframe: str, conn: sqlite3.Connection) -> None:
+    """
+    Tạo bảng positions_{tf} và position_history_{tf} nếu chưa tồn tại.
+    Idempotent — gọi lại không ảnh hưởng data hiện có.
+
+    positions_{tf} schema:
+        entry_close: giữ tên column này trong DB (không đổi thành entry_price)
+                     để tránh migration. Python dict dùng "entry_price",
+                     DB column dùng "entry_close" — map tại INSERT/SELECT.
+        strategy_name: nullable — backward compat với positions không có strategy.
+        gap_top/gap_bottom: nullable — optional, IMFVG-specific.
+        status: "HOLDING" | "CLOSED"
+
+    Partial unique index (SQLite 3.8.9+):
+        Chỉ 1 HOLDING position per symbol — không thể có 2 HOLDING cùng lúc.
+        CLOSED positions không bị ảnh hưởng bởi index này.
+
+    position_history_{tf}:
+        Audit trail cho mọi closed trade. Source từ DB row (không từ state).
+        Immutable sau khi insert.
+    """
+    tf = timeframe
+    conn.executescript(f"""
+        CREATE TABLE IF NOT EXISTS positions_{tf} (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol              TEXT    NOT NULL,
+            strategy_name       TEXT,
+            direction           TEXT    NOT NULL,
+            entry_date          TEXT    NOT NULL,
+            gap_top             REAL,
+            gap_bottom          REAL,
+            entry_close         REAL    NOT NULL,
+            tp_level            REAL    NOT NULL,
+            sl_level            REAL    NOT NULL,
+            trailing_stop       REAL    NOT NULL,
+            atr_at_entry        REAL    NOT NULL,
+            status              TEXT    NOT NULL DEFAULT 'HOLDING',
+            bars_held           INTEGER NOT NULL DEFAULT 0,
+            close_price_at_exit REAL,
+            last_signal_type    TEXT,
+            last_signal_date    TEXT,
+            last_checked_at     TEXT,
+            created_at          DATETIME NOT NULL,
+            closed_at           DATETIME
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_holding_{tf}
+            ON positions_{tf}(symbol)
+            WHERE status = 'HOLDING';
+
+        CREATE INDEX IF NOT EXISTS idx_positions_{tf}_symbol_status
+            ON positions_{tf}(symbol, status);
+
+        CREATE TABLE IF NOT EXISTS position_history_{tf} (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol          TEXT    NOT NULL,
+            strategy_name   TEXT,
+            direction       TEXT    NOT NULL,
+            entry_date      TEXT    NOT NULL,
+            exit_date       TEXT    NOT NULL,
+            entry_price     REAL    NOT NULL,
+            exit_price      REAL    NOT NULL,
+            close_reason    TEXT    NOT NULL,
+            bars_held       INTEGER NOT NULL,
+            atr_at_entry    REAL    NOT NULL,
+            tp_level        REAL    NOT NULL,
+            sl_level        REAL    NOT NULL,
+            gap_top         REAL,
+            gap_bottom      REAL,
+            created_at      DATETIME NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_position_history_{tf}_symbol
+            ON position_history_{tf}(symbol);
+
+        CREATE INDEX IF NOT EXISTS idx_position_history_{tf}_exit_date
+            ON position_history_{tf}(exit_date);
+    """)
+    log.debug("init_positions_db done for timeframe=%s", tf)
+
+
+def _get_holding_position(
+    conn:   sqlite3.Connection,
+    tf:     str,
+    symbol: str,
+) -> dict | None:
+    """
+    Lấy HOLDING position cho symbol. Trả None nếu không có.
+    Dùng partial unique index → tối đa 1 row.
+    """
+    row = conn.execute(
+        f"SELECT * FROM positions_{tf} WHERE symbol = ? AND status = 'HOLDING'",
+        (symbol,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _close_and_log(
+    conn:         sqlite3.Connection,
+    tf:           str,
+    position_id:  int,
+    position_row: dict,
+    exit_date:    str,
+    close_reason: str,
+    exit_price:   float,
+    bars_held:    int,
+) -> None:
+    """
+    Đóng position + ghi vào history. Atomic — caller phải gọi trong `with conn:`.
+
+    SOURCE OF TRUTH: position_row (DB row), KHÔNG từ PositionState.
+    Lý do: PositionState có thể đã được update cho position MỚI
+    (ví dụ: REVERSED → state đã mang direction mới). DB row là record
+    của position VỪA ĐÓNG, luôn đúng.
+
+    Args:
+        position_row: dict từ _get_holding_position() — data của position cũ.
+        exit_date:    bar date khi exit (YYYY-MM-DD JST).
+        exit_price:   fill price (trước slippage — DB lưu theoretical price).
+        bars_held:    số bar đã hold (từ state.bars_held).
+    """
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    # 1. Mark position as CLOSED
+    conn.execute(
+        f"""UPDATE positions_{tf}
+               SET status = 'CLOSED',
+                   close_price_at_exit = ?,
+                   closed_at = ?
+             WHERE id = ?""",
+        (exit_price, now_utc, position_id),
+    )
+
+    # 2. Insert into history — source = position_row (DB), không từ state
+    conn.execute(
+        f"""INSERT INTO position_history_{tf}
+            (symbol, strategy_name, direction, entry_date, exit_date,
+             entry_price, exit_price, close_reason, bars_held,
+             atr_at_entry, tp_level, sl_level, gap_top, gap_bottom, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            position_row["symbol"],
+            position_row.get("strategy_name"),
+            position_row["direction"],           # direction của position CŨ
+            position_row["entry_date"],
+            exit_date,
+            position_row["entry_close"],         # entry_price từ DB column
+            exit_price,
+            close_reason,
+            bars_held,
+            position_row["atr_at_entry"],
+            position_row["tp_level"],
+            position_row["sl_level"],
+            position_row.get("gap_top"),
+            position_row.get("gap_bottom"),
+            now_utc,
+        ),
+    )
+    log.info(
+        "position closed: %s %s %s → %s (bars=%d)",
+        position_row["symbol"], position_row["direction"],
+        close_reason, exit_price, bars_held,
+    )
+
+
+def _insert_position(
+    conn:          sqlite3.Connection,
+    tf:            str,
+    symbol:        str,
+    state:         PositionState,
+    strategy_name: str,
+) -> int:
+    """
+    Insert HOLDING position mới. Trả row id.
+
+    Mapping:
+        state.entry_close → DB column entry_close
+        (Python dùng "entry_price", DB column giữ tên "entry_close")
+
+    Raises:
+        sqlite3.IntegrityError: nếu đã có HOLDING position cho symbol này
+        (partial unique index vi phạm). Caller phải close cũ trước.
+    """
+    now_utc = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        f"""INSERT INTO positions_{tf}
+            (symbol, strategy_name, direction, entry_date,
+             gap_top, gap_bottom, entry_close,
+             tp_level, sl_level, trailing_stop, atr_at_entry,
+             status, bars_held, last_signal_type, last_signal_date,
+             last_checked_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING', ?, ?, ?, ?, ?)""",
+        (
+            symbol,
+            strategy_name,
+            state.direction,
+            state.entry_date,
+            state.gap_top,
+            state.gap_bottom,
+            state.entry_close,        # entry_close column ← state.entry_close
+            state.tp_level,
+            state.sl_level,
+            state.trailing_stop,
+            state.atr_at_entry,
+            state.bars_held,
+            state.last_signal_type,
+            state.last_signal_date,
+            state.last_checked_bar_date,
+            now_utc,
+        ),
+    )
+    log.info(
+        "position opened: %s %s entry=%.4f tp=%.4f sl=%.4f",
+        symbol, state.direction, state.entry_close or 0,
+        state.tp_level or 0, state.sl_level or 0,
+    )
+    return cur.lastrowid
+
+
+def _update_position(
+    conn:        sqlite3.Connection,
+    tf:          str,
+    position_id: int,
+    state:       PositionState,
+) -> None:
+    """
+    Update HOLDING position — trailing_stop, bars_held, last_signal, last_checked.
+    Không update entry fields (immutable sau khi INSERT).
+    """
+    now_utc = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        f"""UPDATE positions_{tf}
+               SET trailing_stop    = ?,
+                   bars_held        = ?,
+                   last_signal_type = ?,
+                   last_signal_date = ?,
+                   last_checked_at  = ?
+             WHERE id = ?""",
+        (
+            state.trailing_stop,
+            state.bars_held,
+            state.last_signal_type,
+            state.last_signal_date,
+            state.last_checked_bar_date,
+            position_id,
+        ),
+    )
+    log.debug("position updated: id=%d bars_held=%d ts=%.4f",
+              position_id, state.bars_held, state.trailing_stop or 0)
+
+
+def _process_symbol(
+    conn:          sqlite3.Connection,
+    tf:            str,
+    symbol:        str,
+    state:         PositionState,
+    bar_date:      str,
+    strategy_name: str,
+) -> None:
+    """
+    Atomic: quyết định DB action dựa trên PositionState. 1 transaction.
+
+    Logic:
+        existing = _get_holding_position(symbol)
+
+        Case A: có exit (close_reason set) + có signal mới (OPEN/REVERSE):
+            _close_and_log(existing)
+            _insert_position(new direction)
+
+        Case B: có exit, không có signal mới:
+            _close_and_log(existing)
+
+        Case C: không exit + có signal OPEN (không có existing):
+            _insert_position(new direction)
+
+        Case D: không exit + still HOLDING (existing vẫn đó):
+            _update_position(existing.id)
+
+        Case E: không exit, không holding, không signal → no-op
+
+    Tất cả trong 1 `with conn:` block → SQLite auto-commit hoặc rollback.
+
+    Args:
+        state:    PositionState từ check_latest_bar() hoặc scan_full_history().
+        bar_date: Date string của bar vừa process (last_checked_bar_date).
+        strategy_name: Tên strategy để lưu vào DB.
+    """
+    with conn:
+        existing = _get_holding_position(conn, tf, symbol)
+
+        has_exit    = state.close_reason is not None
+        has_new_pos = state.is_holding and state.signal_action in ("OPEN", "REVERSE")
+
+        # Case A + B: có exit — PHẢI close trước, insert sau
+        # INVARIANT: close existing trước khi insert mới (UNIQUE index on HOLDING)
+        if has_exit and existing:
+            # Fix: bars_held của position CŨ = existing["bars_held"] + 1 (bar hiện tại)
+            # Không dùng state.bars_held vì sau REVERSE state đã reset về 0
+            bars_held_old = existing["bars_held"] + 1
+            _close_and_log(
+                conn, tf,
+                position_id  = existing["id"],
+                position_row = existing,
+                exit_date    = bar_date,
+                close_reason = state.close_reason,
+                exit_price   = state.close_price_at_exit,
+                bars_held    = bars_held_old,
+            )
+
+        # Case A + C: mở position mới — MUST be after close (UNIQUE index)
+        if has_new_pos:
+            try:
+                _insert_position(conn, tf, symbol, state, strategy_name)
+            except sqlite3.IntegrityError:
+                log.error(
+                    "_process_symbol: duplicate HOLDING for %s — "
+                    "existing not closed before insert. Skipping insert.",
+                    symbol,
+                )
+
+        # Case D: update holding (không có exit, vẫn holding, không có signal mới)
+        elif existing and not has_exit and state.is_holding:
+            _update_position(conn, tf, existing["id"], state)
+
+        # Case E: no-op (không holding, không exit, không signal)
