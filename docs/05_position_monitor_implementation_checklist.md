@@ -224,22 +224,21 @@
 ## Phase 4 — `scan_full_history`
 
 > Mục tiêu: engine chính, bar-by-bar simulation.
-> Phụ thuộc hoàn toàn Phase 3. Test từng sub-feature theo thứ tự.
-
-- [ ] **T23** Implement `scan_full_history(df, cfg, return_trades=False, summarize_trades=False, atr_series=None)`:
-
-  **Skeleton:**
-  - [ ] Guard: `return_trades and summarize_trades` → `raise ValueError`
-  - [ ] Guard: `len(df) < cfg.atr_period + 4` → return `None` hoặc `(None, [])` / `(None, empty_summary)`
-  - [ ] Compute ATR: dùng `atr_series` nếu có, else `compute_atr(df, period=cfg.atr_period)`
-  - [ ] Initialize state variables (direction, ts, tp_level, sl_level, entry_date, ...)
-  - [ ] Initialize accumulator dict (nếu `summarize_trades`)
-
-  **Main loop (thứ tự bắt buộc):**
-  - [ ] `bars_held += 1` chỉ khi `direction is not None` (entry bar = 0)
-  - [ ] Gọi `_ratchet_ts()` để cập nhật TS
-  - [ ] **STEP 1**: `_check_exit()` nếu đang HOLDING → nếu exit: `_record_trade()` hoặc `_accumulate()` + `_clean_exit_state()`
-  - [ ] **STEP 2**: `_detect_imfvg_at()` → set `signal_action`:
+> Phụ thuộc hoàn toàn Phase 3. Test từng sub-featu  **Main loop (thứ tự bắt buộc):**
+  - [x] `bars_held += 1` chỉ khi `direction is not None` (entry bar = 0)
+  - [x] Gọi `_ratchet_ts()` để cập nhật TS
+  - [x] **STEP 1**: `_check_exit()` nếu đang HOLDING → nếu exit: `_record_trade()` hoặc `_accumulate()` + `_clean_exit_state()`
+  - [x] **STEP 2**: `_detect_imfvg_at()` → set `signal_action`:
+    - `direction is not None` + `sig == direction` → `signal_action = "IGNORE"`
+    - `direction is not None` + `sig != direction` → `signal_action = "REVERSE"` + record REVERSED + clean + open mới
+    - `direction is None` (no holding hoặc vừa exit step 1) → `signal_action = "OPEN"` + open
+  - [x] Sau khi open: `bars_held = 0`, reset `close_reason, exit_price`
+ 
+  **Return:**
+  - [x] Build `PositionState` từ state cuối
+  - [x] `return_trades=False` → `return state`
+  - [x] `return_trades=True` → `return (state, trades_list)`
+  - [x] `summarize_trades=True` → `return (state, TradesSummary.from_accumulator(acc))`
     - `direction is not None` + `sig == direction` → `signal_action = "IGNORE"`
     - `direction is not None` + `sig != direction` → `signal_action = "REVERSE"` + record REVERSED + clean + open mới
     - `direction is None` (no holding hoặc vừa exit step 1) → `signal_action = "OPEN"` + open
@@ -253,21 +252,21 @@
 
 **Tests — thêm vào `tests/test_position_tracker.py` sau từng sub-feature:**
 
-- [ ] **T60** `test_bull_signal_detected` — DataFrame có BULL signal → `is_holding=True`, `direction=BULL`
-- [ ] **T61** `test_bear_signal_detected` — tương tự BEAR
-- [ ] **T62** `test_no_signal_no_position` — không có gap → `is_holding=False`
-- [ ] **T63** `test_tp_hit` — BULL position, bar có `high >= tp_level` → `close_reason="TP_HIT"`
-- [ ] **T64** `test_sl_hit` — BULL position, bar có `low <= sl_level` → `close_reason="SL_HIT"`
-- [ ] **T65** `test_ts_hit` — TS ratchet lên, close vượt → `close_reason="TS_HIT"`
-- [ ] **T66** `test_reversed` — BULL đang hold, BEAR signal mới → `close_reason="REVERSED"`, `direction=BEAR`
-- [ ] **T67** ⚠️ `test_tp_and_new_signal_same_bar` — **case critical nhất**: cùng bar high ≥ TP VÀ signal mới → `close_reason="TP_HIT"`, `is_holding=True` (position mới mở), `signal_action="OPEN"`
-- [ ] **T68** `test_exit_state_fully_reset` — sau SL_HIT, tất cả state fields phải là `None`
-- [ ] **T69** `test_bars_held_entry_bar_is_zero` — bar entry: `bars_held=0`; sau 3 bars: `bars_held=3`
-- [ ] **T70** `test_signal_action_ignore_same_direction`
-- [ ] **T71** `test_signal_action_open`
-- [ ] **T72** `test_signal_action_reverse`
-- [ ] **T73** `test_return_trades_backward_compat` — `return_trades=False` → trả `PositionState`, không phải tuple
-- [ ] **T85** `test_no_literal_in_engine` — chạy 2 configs khác nhau (`tp_mult=1.0` vs `4.0`) → kết quả phải khác nhau
+- [x] **T60** `test_bull_signal_detected` — DataFrame có BULL signal → `is_holding=True`, `direction=BULL`
+- [x] **T61** `test_bear_signal_detected` — tương tự BEAR
+- [x] **T62** `test_no_signal_no_position` — không có gap → `is_holding=False`
+- [x] **T63** `test_tp_hit` — BULL position, bar có `high >= tp_level` → `close_reason="TP_HIT"`
+- [x] **T64** `test_sl_hit` — BULL position, bar có `low <= sl_level` → `close_reason="SL_HIT"`
+- [x] **T65** `test_ts_hit` — TS ratchet lên, close vượt → `close_reason="TS_HIT"`
+- [x] **T66** `test_reversed` — BULL đang hold, BEAR signal mới → `close_reason="REVERSED"`, `direction=BEAR`
+- [x] **T67** ⚠️ `test_tp_and_new_signal_same_bar` — **case critical nhất**: cùng bar high ≥ TP VÀ signal mới → `close_reason="TP_HIT"`, `is_holding=True` (position mới mở), `signal_action="OPEN"`
+- [x] **T68** `test_exit_state_fully_reset` — sau SL_HIT, tất cả state fields phải là `None`
+- [x] **T69** `test_bars_held_entry_bar_is_zero` — bar entry: `bars_held=0`; sau 3 bars: `bars_held=3`
+- [x] **T70** `test_signal_action_ignore_same_direction`
+- [x] **T71** `test_signal_action_open`
+- [x] **T72** `test_signal_action_reverse`
+- [x] **T73** `test_return_trades_backward_compat` — `return_trades=False` → trả `PositionState`, không phải tuple
+- [x] **T85** `test_no_literal_in_engine` — chạy 2 configs khác nhau (`tp_mult=1.0` vs `4.0`) → kết quả phải khác nhau
 
 ---
 
@@ -275,31 +274,31 @@
 
 > Phụ thuộc Phase 3 helpers. Test ngay.
 
-- [ ] **T24** Implement `check_latest_bar(df, position_row, cfg) → PositionState`:
+- [x] **T24** Implement `check_latest_bar(df, position_row, cfg) → PositionState`:
 
   **Guards (trả `_no_update_state`):**
-  - [ ] `df is None or df.empty` → reason `"cache_unavailable"`
-  - [ ] `last_bar_date = df.index[-1].tz_convert("Asia/Tokyo").date()` ← timezone-safe
-  - [ ] `last_checked_at` từ DB là `"YYYY-MM-DD"` JST string → `date.fromisoformat(...)`
-  - [ ] `last_bar_date <= last_checked` → reason `"no_new_bar"`
-  - [ ] `len(df) < cfg.atr_period + 1` → reason `"insufficient_bars_for_atr"`
-  - [ ] `atr_now = atr_series.iloc[-1]`; `isna(atr_now) or atr_now <= 0` → reason `"atr_not_ready"`
+  - [x] `df is None or df.empty` → reason `"cache_unavailable"`
+  - [x] `last_bar_date = df.index[-1].tz_convert("Asia/Tokyo").date()` ← timezone-safe
+  - [x] `last_checked_at` từ DB là `"YYYY-MM-DD"` JST string → `date.fromisoformat(...)`
+  - [x] `last_bar_date <= last_checked` → reason `"no_new_bar"`
+  - [x] `len(df) < cfg.atr_period + 1` → reason `"insufficient_bars_for_atr"`
+  - [x] `atr_now = atr_series.iloc[-1]`; `isna(atr_now) or atr_now <= 0` → reason `"atr_not_ready"`
 
   **Logic (dùng `i = len(df) − 1`, bar = `df.iloc[-1]`):**
-  - [ ] **STEP 1**: TP/SL/TS check (nếu `position_row["direction"]` != None)
-  - [ ] **STEP 2**: `_detect_imfvg_at(df, i, cfg)` → set `signal_action`, `new_signal_detected`
-  - [ ] Xử lý REVERSE, OPEN, IGNORE
-  - [ ] Return `PositionState` với `last_checked_bar_date = last_bar_date.isoformat()`
+  - [x] **STEP 1**: TP/SL/TS check (nếu `position_row["direction"]` != None)
+  - [x] **STEP 2**: `_detect_imfvg_at(df, i, cfg)` → set `signal_action`, `new_signal_detected`
+  - [x] Xử lý REVERSE, OPEN, IGNORE
+  - [x] Return `PositionState` với `last_checked_bar_date = last_bar_date.isoformat()`
 
 **Tests:**
 
-- [ ] **T50** `test_rr_ratio_signed_positive` — BULL win trade → `rr > 0`
-- [ ] **T51** `test_rr_ratio_signed_negative` — BULL loss trade → `rr < 0`
-- [ ] **T52** `test_net_pnl_includes_fee`
-- [ ] **T53** `test_is_win_tp_hit_but_high_fee` — TP_HIT nhưng `net_pnl_pct < 0` → `is_win=False`
-- [ ] **T54** `test_is_tp_hit_property` — `close_reason="TP_HIT"` → `is_tp_hit=True`; `close_reason="TS_HIT"` → `is_tp_hit=False`
-- [ ] Test `check_latest_bar` guards: cache_unavailable, no_new_bar, insufficient_bars
-- [ ] Test `check_latest_bar` với signal detection
+- [x] **T50** `test_rr_ratio_signed_positive` — BULL win trade → `rr > 0`
+- [x] **T51** `test_rr_ratio_signed_negative` — BULL loss trade → `rr < 0`
+- [x] **T52** `test_net_pnl_includes_fee`
+- [x] **T53** `test_is_win_tp_hit_but_high_fee` — TP_HIT nhưng `net_pnl_pct < 0` → `is_win=False`
+- [x] **T54** `test_is_tp_hit_property` — `close_reason="TP_HIT"` → `is_tp_hit=True`; `close_reason="TS_HIT"` → `is_tp_hit=False`
+- [x] Test `check_latest_bar` guards: cache_unavailable, no_new_bar, insufficient_bars
+- [x] Test `check_latest_bar` với signal detection
 
 ---
 
@@ -307,13 +306,13 @@
 
 > Phụ thuộc `scan_full_history`. Test metrics tính toán đúng.
 
-- [ ] **T25** `backtest_symbol(symbol, cfg, atr_cache=None) → dict`:
+- [x] **T25** `backtest_symbol(symbol, cfg, atr_cache=None) → dict`:
   - `read_cache(symbol, timeframe)` → nếu None → `{}`
   - ATR cache theo `cfg.atr_period`
   - Gọi `scan_full_history(..., summarize_trades=True, atr_series=...)`
   - Tính và return metrics dict
 
-- [ ] **T26** `backtest_portfolio(symbols, cfg, timeframe="1MO", weight_by="trades") → dict`:
+- [x] **T26** `backtest_portfolio(symbols, cfg, timeframe="1MO", weight_by="trades") → dict`:
   - Guard: `weight_by not in ("trades", "symbol")` → `raise ValueError`
   - `"trades"` mode: accumulate totals → weighted metrics
   - `"symbol"` mode: collect per-symbol summaries → equal-weight mean
@@ -322,22 +321,22 @@
 
 **Tests:**
 
-- [ ] **T74** `test_summarize_matches_trade_list` — `return_trades=True` và `summarize_trades=True` trên cùng df → mọi metric phải khớp (MDD, std_rr, std_pnl, n_wins, total_rr...)
-- [ ] **T75** `test_return_trades_and_summarize_mutually_exclusive` → `ValueError`
-- [ ] **T76** `test_atr_cache_same_result` — precomputed vs inline → cùng kết quả
-- [ ] **T77** `test_std_rr_correct` — verify vs `numpy.std(rr_values)`
-- [ ] **T78** `test_std_pnl_correct`
-- [ ] **T79** `test_sharpe_positive` — profitable strategy → `sharpe > 0`
-- [ ] **T80** `test_sharpe_zero_when_std_zero` — tất cả trades cùng P&L → `std=0`, `sharpe=0`
-- [ ] **T81** `test_monotonic_tp_mult` — `tp_mult` tăng → `avg_bars` tăng (hoặc không giảm)
-- [ ] **T82** `test_monotonic_filter_width_reduces_trades` — `filter_width` tăng → số trades ≤ trước
-- [ ] **T83** `test_sl_first_priority_changes_results` — construct bar có cả TP và SL cùng hit
-- [ ] **T84** `test_slippage_reduces_pnl` — `slippage > 0` → `avg_net_pnl < 0 slippage`
-- [ ] **T91** `test_portfolio_win_rate_weighted` — symbol A 50 trades win 60%, B 2 trades win 0% → weighted ≈ 57.7% (không phải 30%)
-- [ ] **T92** `test_portfolio_weight_by_symbol` — same setup → `"symbol"` mode = 30%
-- [ ] **T93** `test_portfolio_no_max_drawdown_key` — key không được có trong result
-- [ ] **T95** `test_portfolio_total_net_pnl_pct_naming` — key mới có, key cũ không có
-- [ ] **T96** `test_portfolio_expectancy_rr_naming` — `portfolio_expectancy_rr` có, `portfolio_expectancy` không có
+- [x] **T74** `test_summarize_matches_trade_list` — `return_trades=True` và `summarize_trades=True` trên cùng df → mọi metric phải khớp (MDD, std_rr, std_pnl, n_wins, total_rr...)
+- [x] **T75** `test_return_trades_and_summarize_mutually_exclusive` → `ValueError`
+- [x] **T76** `test_atr_cache_same_result` — precomputed vs inline → cùng kết quả
+- [x] **T77** `test_std_rr_correct` — verify vs `numpy.std(rr_values)`
+- [x] **T78** `test_std_pnl_correct`
+- [x] **T79** `test_sharpe_positive` — profitable strategy → `sharpe > 0`
+- [x] **T80** `test_sharpe_zero_when_std_zero` — tất cả trades cùng P&L → `std=0`, `sharpe=0`
+- [x] **T81** `test_monotonic_tp_mult` — `tp_mult` tăng → `avg_bars` tăng (hoặc không giảm)
+- [x] **T82** `test_monotonic_filter_width_reduces_trades` — `filter_width` tăng → số trades ≤ trước
+- [x] **T83** `test_sl_first_priority_changes_results` — construct bar có cả TP và SL cùng hit
+- [x] **T84** `test_slippage_reduces_pnl` — `slippage > 0` → `avg_net_pnl < 0 slippage`
+- [x] **T91** `test_portfolio_win_rate_weighted` — symbol A 50 trades win 60%, B 2 trades win 0% → weighted ≈ 57.7% (không phải 30%)
+- [x] **T92** `test_portfolio_weight_by_symbol` — same setup → `"symbol"` mode = 30%
+- [x] **T93** `test_portfolio_no_max_drawdown_key` — key không được có trong result
+- [x] **T95** `test_portfolio_total_net_pnl_pct_naming` — key mới có, key cũ không có
+- [x] **T96** `test_portfolio_expectancy_rr_naming` — `portfolio_expectancy_rr` có, `portfolio_expectancy` không có
 
 ---
 
@@ -348,7 +347,7 @@
 
 ### 7.1 Schema & Init
 
-- [ ] **T27** `init_positions_db(timeframe, conn)` — tạo 2 bảng + indexes:
+- [x] **T27** `init_positions_db(timeframe, conn)` — tạo 2 bảng + indexes:
 
   **`positions_{tf}`:**
   - `id INTEGER PRIMARY KEY AUTOINCREMENT`
@@ -378,21 +377,21 @@
 
 ### 7.2 CRUD Helpers
 
-- [ ] **T28** `_get_holding_position(conn, timeframe, symbol) → dict | None` — `SELECT ... WHERE symbol=? AND status='HOLDING' ORDER BY id DESC LIMIT 1`
+- [x] **T28** `_get_holding_position(conn, timeframe, symbol) → dict | None` — `SELECT ... WHERE symbol=? AND status='HOLDING' ORDER BY id DESC LIMIT 1`
 
-- [ ] **T29** `_close_and_log(conn, timeframe, position_id, position_row, exit_date, close_reason, exit_price, bars_held)`:
+- [x] **T29** `_close_and_log(conn, timeframe, position_id, position_row, exit_date, close_reason, exit_price, bars_held)`:
   - `UPDATE positions_{tf} SET status=?, close_price_at_exit=?, closed_at=? WHERE id=?`
   - `INSERT INTO position_history_{tf} (...)` — tất cả entry fields từ `position_row` (DB row), không từ state
   - Caller phải gọi trong `with conn:` block
 
-- [ ] **T30** `_insert_position(conn, timeframe, symbol, state)`:
+- [x] **T30** `_insert_position(conn, timeframe, symbol, state)`:
   - `INSERT INTO positions_{tf} (...)`
   - Catch `sqlite3.IntegrityError` (partial index violation) → `log.error`, không crash
 
-- [ ] **T31** `_update_position(conn, timeframe, position_id, state)`:
+- [x] **T31** `_update_position(conn, timeframe, position_id, state)`:
   - `UPDATE positions_{tf} SET trailing_stop=?, bars_held=?, last_checked_at=?, last_signal_type=?, last_signal_date=? WHERE id=?`
 
-- [ ] **T32** `_process_symbol(conn, timeframe, symbol, state, bar_date)`:
+- [x] **T32** `_process_symbol(conn, timeframe, symbol, state, bar_date)`:
   - Toàn bộ trong 1 `with conn:` block (atomic)
   - Nếu `state.close_reason` → `_close_and_log(...)` dùng `position_row` từ DB
   - Nếu `state.signal_action in ("OPEN", "REVERSE")` → `_insert_position(...)`
@@ -400,9 +399,9 @@
 
 **Tests (trong `tests/test_position_monitor.py`):**
 
-- [ ] **T97** `test_partial_index_prevents_duplicate_holding` — INSERT 2 HOLDING cùng symbol → `IntegrityError`; 2 CLOSED cùng symbol → OK
-- [ ] **T98** `test_close_and_log_uses_db_row_not_state` — REVERSED: history phải có direction của position cũ (BULL), không phải state mới (BEAR)
-- [ ] **T99** `test_atomic_transaction` — close + insert new phải cùng commit
+- [x] **T97** `test_partial_index_prevents_duplicate_holding` — INSERT 2 HOLDING cùng symbol → `IntegrityError`; 2 CLOSED cùng symbol → OK
+- [x] **T98** `test_close_and_log_uses_db_row_not_state` — REVERSED: history phải có direction của position cũ (BULL), không phải state mới (BEAR)
+- [x] **T99** `test_atomic_transaction` — close + insert new phải cùng commit
 
 ---
 
@@ -412,11 +411,11 @@
 
 ### 8.1 Logging
 
-- [ ] **T33** `setup_logging(timeframe)` — tái sử dụng pattern từ `scanner.py` (`JSTFormatter`, file + stdout)
+- [x] **T33** `setup_logging(timeframe)` — tái sử dụng pattern từ `scanner.py` (`JSTFormatter`, file + stdout)
 
 ### 8.2 CLI Parse
 
-- [ ] **T34** `parse_args()`:
+- [x] **T34** `parse_args()`:
   - `--timeframe` — "1MO" default
   - `--full-scan` — force scan toàn bộ cache
   - `--dry-run` — không ghi DB, không gửi Telegram
@@ -424,28 +423,28 @@
 
 ### 8.3 Full Scan Mode
 
-- [ ] **T35** `run_full_scan(timeframe, cfg, dry_run)`:
+- [x] **T35** `run_full_scan(timeframe, cfg, dry_run)`:
   - Scan `cache/` → list tất cả `*_{timeframe}.parquet`
   - `read_cache(symbol, timeframe)` → nếu None: skip
   - `scan_full_history(df, cfg)` → nếu `is_holding=False`: skip
   - Nếu không `dry_run`: `_process_symbol(...)` với `_insert_position`
   - Log: "Full scan: N symbols, M holding"
-- [ ] ✦ **Verify**: `python position_monitor.py --timeframe 1MO --dry-run --full-scan` với 5 symbols thực → output hợp lý, không crash
+- [x] ✦ **Verify**: `python position_monitor.py --timeframe 1MO --dry-run --full-scan` với 5 symbols thực → output hợp lý, không crash
 
 ### 8.4 Normal Mode
 
-- [ ] **T36** `run_normal(timeframe, cfg, dry_run)`:
+- [x] **T36** `run_normal(timeframe, cfg, dry_run)`:
   - `SELECT * FROM positions_{tf} WHERE status='HOLDING'`
   - Với mỗi HOLDING: `read_cache(symbol, timeframe)` → `check_latest_bar(df, pos_row, cfg)` → `_process_symbol(...)`
   - Log: "N positions checked, M closed, K updated"
 
 ### 8.5 Report & Notify
 
-- [ ] **T37** `run_report(timeframe)`:
+- [x] **T37** `run_report(timeframe)`:
   - `SELECT * FROM positions_{tf} WHERE status='HOLDING' ORDER BY entry_date`
   - Print table: symbol | direction | entry_date | tp | sl | ts | bars_held
 
-- [ ] **T38** `notify_positions(timeframe)`:
+- [x] **T38** `notify_positions(timeframe)`:
   - Format: `[1MO | POSITION MONITOR — YYYY-MM-DD]`
   - Group: HOLDING list + closed this run
   - Chunk 50 per message (reuse pattern từ `notifier.py`)
@@ -453,22 +452,22 @@
 
 ### 8.6 Integration Tests
 
-- [ ] **T100** `test_tp_and_new_signal_same_bar_db` — integration: TP_HIT + signal mới cùng bar → chỉ 1 HOLDING row sau khi chạy
-- [ ] **T101** `test_full_scan_mode` — mock cache với 3 symbols → verify 3 positions inserted
-- [ ] **T102** `test_normal_mode_update_trailing_stop` — HOLDING position, bar mới → trailing_stop được update
-- [ ] **T103** `test_no_update_when_bar_date_same_as_last_checked` — `last_checked_at` = ngày bar cuối → không update
+- [x] **T100** `test_tp_and_new_signal_same_bar_db` — integration: TP_HIT + signal mới cùng bar → chỉ 1 HOLDING row sau khi chạy
+- [x] **T101** `test_full_scan_mode` — mock cache với 3 symbols → verify 3 positions inserted
+- [x] **T102** `test_normal_mode_update_trailing_stop` — HOLDING position, bar mới → trailing_stop được update
+- [x] **T103** `test_no_update_when_bar_date_same_as_last_checked` — `last_checked_at` = ngày bar cuối → không update
 
 ---
 
 ## Milestone Checkpoints ✦
 
 - [x] ✦ **M1** (Sau Phase 1): `python scanner.py --timeframe 1MO --dry-run` → kết quả giống trước khi sửa `fvg.py`
-- [ ] ✦ **M2** (Sau Phase 4): `scan_full_history(df, cfg)` trên 5 symbols thực → kết quả hợp lý, T67 (`test_tp_and_new_signal_same_bar`) pass
-- [ ] ✦ **M3** (Sau Phase 6): `backtest_portfolio([...], cfg, weight_by="trades")` trên 10 symbols thực → metrics có ý nghĩa, `portfolio_max_drawdown` không có trong result
-- [ ] ✦ **M4** (Sau Phase 7): `init_positions_db` + `_process_symbol` với mock data → partial index hoạt động đúng (T97 pass)
-- [ ] ✦ **M5** (Sau Phase 8 full-scan): `python position_monitor.py --timeframe 1MO --dry-run --full-scan` → scan 50+ symbols thực, không crash, log hợp lý
-- [ ] ✦ **M6** (Sau Phase 8 normal): `python position_monitor.py --timeframe 1MO --dry-run` → check HOLDING positions, update TS log hiển thị
-- [ ] ✦ **M7** (Final): Tất cả 103 tests pass. `python position_monitor.py --timeframe 1MO` → Telegram nhận message.
+- [x] ✦ **M2** (Sau Phase 4): `scan_full_history(df, cfg)` trên 5 symbols thực → kết quả hợp lý, T67 (`test_tp_and_new_signal_same_bar`) pass
+- [x] ✦ **M3** (Sau Phase 6): `backtest_portfolio([...], cfg, weight_by="trades")` trên 10 symbols thực → metrics có ý nghĩa, `portfolio_max_drawdown` không có trong result
+- [x] ✦ **M4** (Sau Phase 7): `init_positions_db` + `_process_symbol` với mock data → partial index hoạt động đúng (T97 pass)
+- [x] ✦ **M5** (Sau Phase 8 full-scan): `python position_monitor.py --timeframe 1MO --dry-run --full-scan` → scan 50+ symbols thực, không crash, log hợp lý
+- [x] ✦ **M6** (Sau Phase 8 normal): `python position_monitor.py --timeframe 1MO --dry-run` → check HOLDING positions, update TS log hiển thị
+- [x] ✦ **M7** (Final): Tất cả 103 tests pass. `python position_monitor.py --timeframe 1MO` → Telegram nhận message.
 
 ---
 
