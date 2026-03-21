@@ -2039,7 +2039,7 @@ def _process_symbol(
         existing = _get_holding_position(conn, tf, symbol)
 
         has_exit    = state.close_reason is not None
-        has_new_pos = state.is_holding and state.signal_action in ("OPEN", "REVERSE")
+        has_new_pos = state.is_holding and (state.signal_action in ("OPEN", "REVERSE") or existing is None)
 
         # Case A + B: có exit — PHẢI close trước, insert sau
         # INVARIANT: close existing trước khi insert mới (UNIQUE index on HOLDING)
