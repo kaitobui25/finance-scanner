@@ -27,3 +27,6 @@ requirements.txt
 
 #db
 *.bak
+*.db-wal
+*.db-shm
+data/old/*
