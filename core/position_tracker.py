@@ -1790,6 +1790,7 @@ def init_positions_db(timeframe: str, conn: sqlite3.Connection) -> None:
             last_signal_type    TEXT,
             last_signal_date    TEXT,
             last_checked_at     TEXT,
+            notified_at         DATETIME,
             created_at          DATETIME NOT NULL,
             closed_at           DATETIME
         );
