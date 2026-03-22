@@ -30,3 +30,26 @@ requirements.txt
 *.db-wal
 *.db-shm
 data/old/*
+
+#tests
+tests/old/*
+
+#docs
+docs/old/*
+
+#backtest
+backtest/*
+
+# nhưng cho phép 2 folder này
+!backtest/v2/
+!backtest/cache_15y/
+
+# nhưng ignore lại toàn bộ bên trong cache_15y
+backtest/cache_15y/*
+
+# chỉ cho phép 2 file cụ thể
+!backtest/cache_15y/9434.T_1D.parquet
+!backtest/cache_15y/5401.T_1D.parquet
+!backtest/cache_15y/3350.T_1D.parquet
+!backtest/cache_15y/9984.T_1D.parquet
+!backtest/cache_15y/2181.T_1D.parquet
